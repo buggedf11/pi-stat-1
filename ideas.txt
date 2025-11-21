@@ -1,0 +1,6 @@
+1.  set up pi 
+2.  create a pi flask server to comunicat to pi needs to be a generic file i can upose on multiple machines
+3.  set up terminal view
+4.  create a folder that has different programs in each
+5.  set up a txt file that has copy paste commands for each pi to easily set it up
+6.  intergrate screen on homelab

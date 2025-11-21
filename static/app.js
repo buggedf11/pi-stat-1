@@ -155,16 +155,28 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function collectStats(){
-    return Array.from(document.querySelectorAll('.stat')).map(stat => {
-      const labelEl = stat.querySelector('.label');
-      const valueEl = stat.querySelector('.value');
-      if(!labelEl || !valueEl) return null;
-      const metaEl = stat.querySelector('.meta');
+    return Array.from(document.querySelectorAll('.pi-card')).map(card => {
+      const index = Number(card.dataset.pi) || null;
+      const labelEl = card.querySelector('.pi-label');
+      if(!labelEl) return null;
       const label = labelEl.textContent.trim();
-      const value = valueEl.textContent.trim();
-      const description = metaEl ? metaEl.textContent.trim() : (stat.dataset.description || '');
-      const index = Number(stat.dataset.pi) || parseInt((label.match(/(\d+)/) || [])[1], 10) || null;
-      return { stat, label, value, description, index, valueEl };
+      const cpuEl = card.querySelector('.value[data-metric="cpu"]');
+      const ramEl = card.querySelector('.value[data-metric="ram"]');
+      const taskEl = card.querySelector('.value[data-metric="task"]') || card.querySelector('.pi-task');
+      const cpuText = cpuEl ? cpuEl.textContent.trim() : 'n/a';
+      const ramText = ramEl ? ramEl.textContent.trim() : 'n/a';
+      const taskText = taskEl ? taskEl.textContent.trim() : 'Unassigned';
+      return {
+        card,
+        index,
+        label,
+        cpuEl,
+        ramEl,
+        taskEl,
+        cpu: cpuText,
+        ram: ramText,
+        task: taskText
+      };
     }).filter(Boolean);
   }
 
@@ -224,6 +236,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function getHoldableCommandNames(){
+    return Object.entries(commandCatalog)
+      .filter(([, info]) => info && info.allowHold === true)
+      .map(([name, info]) => info.label || name);
+  }
+
   function startHold(resolved, label){
     if(!resolved || !resolved.name) return;
     const command = commandCatalog[resolved.name];
@@ -236,6 +254,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if(command.allowHold !== true){
       const display = command.label || invoked;
       writeTerminalLine(`Command '${display}' cannot be held.`);
+      const holdableList = getHoldableCommandNames();
+      if(holdableList.length){
+        writeTerminalLine(`Hold supports: ${holdableList.join(', ')}`);
+      }
+      writeTerminalLine("Use 'hold list' to view supported commands.");
       return;
     }
 
@@ -308,13 +331,80 @@ document.addEventListener('DOMContentLoaded', () => {
       usage: 'help',
       allowHold: true,
       action(ctx){
+        const padWidth = 18;
         ctx.write('Available commands:');
         Object.entries(commandCatalog).forEach(([name, info]) => {
+          if(info && info.showInHelp === false) return;
           const displayName = info.label || name;
-          ctx.write(`  ${displayName.padEnd(12)} ${info.description}`);
-          if(info.usage && info.usage !== displayName) ctx.write(`      usage: ${info.usage}`);
+          const desc = info.description || '';
+          ctx.write(`  ${displayName.padEnd(padWidth)} ${desc}`.trimEnd());
+          if(info.usage && info.usage !== displayName){
+            ctx.write(`      usage: ${info.usage}`);
+          }
         });
-        ctx.write('  hold <command>  Hold a command and refresh every second');
+        const holdable = getHoldableCommandNames();
+        if(holdable.length){
+          ctx.write(`Hold-ready commands: ${holdable.join(', ')}`);
+        }else{
+          ctx.write('Hold-ready commands: none');
+        }
+        if(holdRegistry.size){
+          const summary = Array.from(holdRegistry.entries()).map(([id, entry])=>`#${id} (${entry.label})`).join(', ');
+          ctx.write(`Active holds: ${summary}`);
+        }else{
+          ctx.write('Active holds: none');
+        }
+      }
+    },
+    hold: {
+      description: 'Repeat another command every second',
+      usage: 'hold <command>',
+      action(ctx){
+        const holdable = getHoldableCommandNames();
+        const sub = (ctx.args[0] || '').toLowerCase();
+        const isList = ['list','--list','-l'].includes(sub);
+        const isHelp = ['help','--help','-h','?'].includes(sub);
+        const refreshSeconds = Math.max(0.2, HOLD_INTERVAL_MS / 1000);
+        const listLine = holdable.length ? `Hold-ready commands: ${holdable.join(', ')}` : 'Hold-ready commands: none';
+
+        const showBasics = ()=>{
+          ctx.write('Usage: hold <command>');
+          ctx.write(`Refresh interval: ${refreshSeconds}s`);
+          ctx.write(listLine);
+          ctx.write('Use release to clear all holds.');
+          ctx.write('Example: hold monitor pi 3');
+        };
+
+        if(isList){
+          ctx.write(listLine);
+          return;
+        }
+        if(isHelp){
+          showBasics();
+          return;
+        }
+        if(ctx.args.length){
+          ctx.write('To hold a command, run: hold <command>');
+          showBasics();
+          return;
+        }
+        showBasics();
+      }
+    },
+    release: {
+      description: 'Release all active holds',
+      usage: 'release',
+      action(ctx){
+        if(ctx.args && ctx.args.length){
+          ctx.write('release ignores additional parameters; clearing all holds.');
+        }
+        const released = stopAllHolds();
+        if(!released.length){
+          ctx.write('No active holds to release.');
+          return;
+        }
+        const summary = released.map(item => `#${item.id} (${item.label})`).join(', ');
+        ctx.write(`Released holds: ${summary}.`);
       }
     },
     ping: {
@@ -394,8 +484,8 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         entries.forEach(entry => {
-          const suffix = entry.description ? ` - ${entry.description}` : '';
-          ctx.write(`${entry.label}: ${entry.value}${suffix}`);
+          const task = entry.task ? ` — ${entry.task}` : '';
+          ctx.write(`${entry.label}${task} | CPU ${entry.cpu} | RAM ${entry.ram}`);
         });
       }
     },
@@ -467,24 +557,8 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        const descriptor = entry.description ? ` - ${entry.description}` : '';
-        ctx.write(`Monitoring ${entry.label}${descriptor}: ${entry.value}`);
-      }
-    },
-    release: {
-      description: 'Release all active holds',
-      usage: 'release',
-      action(ctx){
-        if(ctx.args && ctx.args.length){
-          ctx.write('release ignores additional parameters; clearing all holds.');
-        }
-        const released = stopAllHolds();
-        if(!released.length){
-          ctx.write('No active holds to release.');
-          return;
-        }
-        const summary = released.map(item => `#${item.id} (${item.label})`).join(', ');
-        ctx.write(`Released holds: ${summary}.`);
+        const task = entry.task ? ` — ${entry.task}` : '';
+        ctx.write(`Monitoring ${entry.label}${task}: CPU ${entry.cpu} | RAM ${entry.ram}`);
       }
     }
   };
@@ -498,8 +572,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if(primary === 'hold'){
       const holdTokens = tokens.slice(1);
-      if(!holdTokens.length){
-        writeTerminalLine('Usage: hold <command>');
+      const infoKey = (holdTokens[0] || '').toLowerCase();
+      const treatAsInfo = !holdTokens.length || ['--help','-h','help','?','list','--list','-l'].includes(infoKey);
+      if(treatAsInfo){
+        runResolvedCommand(
+          {
+            name: 'hold',
+            args: holdTokens,
+            label: 'hold',
+            invokedName: tokens[0],
+            tokens: [...tokens]
+          },
+          { raw: trimmed, input: inputRaw }
+        );
         return;
       }
       const resolvedHold = resolveCommand(holdTokens);
@@ -511,6 +596,16 @@ document.addEventListener('DOMContentLoaded', () => {
           writeTerminalLine('Unable to determine command to hold.');
         }
         writeTerminalLine("Type 'help' to list available commands.");
+        runResolvedCommand(
+          {
+            name: 'hold',
+            args: ['list'],
+            label: 'hold',
+            invokedName: tokens[0],
+            tokens: [...tokens]
+          },
+          { raw: trimmed, input: inputRaw }
+        );
         return;
       }
       const label = resolvedHold.label || holdTokens.join(' ');
@@ -579,7 +674,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Stats animation
   function animateStats(){
-    const vals = document.querySelectorAll('.stat .value');
+    const vals = document.querySelectorAll('.metric .value[data-target]');
     vals.forEach(v=>{
       const target = parseFloat(v.dataset.target || '0');
       const unit = v.dataset.unit || '';
@@ -744,13 +839,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Periodic small updates
   setInterval(()=>{
     // simulate small stat changes (no-op but safe)
-    document.querySelectorAll('.stat .value').forEach(v=>{
+    document.querySelectorAll('.metric .value[data-target]').forEach(v=>{
       const base = Number(v.getAttribute('data-target') || v.dataset.target) || 0;
       // could add small random wiggle here in future
     });
     animateStats();
     appendLog('Telemetry tick');
   }, 8000);
-
-  // Keyboard shortcuts: disabled Tab-to-cycle behavior so bottom buttons are primary
 });
