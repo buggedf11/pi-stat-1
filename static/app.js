@@ -9,8 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
   try{
     ['wheel','touchmove'].forEach(evt => {
       window.addEventListener(evt, e => {
-        const ok = e.target.closest && e.target.closest('.terminal-inner, .terminal-output, .log-list');
-        if(!ok){ e.preventDefault(); }
+        const allowLogScroll = e.target.closest && e.target.closest('.log-list');
+        if(!allowLogScroll){ e.preventDefault(); }
       }, {passive:false});
     });
     window.addEventListener('keydown', (e)=>{
@@ -55,9 +55,16 @@ document.addEventListener('DOMContentLoaded', () => {
     purple: { accent:'#c77dff', accent2:'#e0aaff', muted:'#b794f6', bg:'#140016', panel:'#1f0026' }
   };
 
+  const holdRegistry = new Map();
+  let holdIdCounter = 1;
+  const HOLD_INTERVAL_MS = 1000;
+
   function scrollTerminalToBottom(){
-    if(!terminal || !terminal.parentElement) return;
-    terminal.parentElement.scrollTop = terminal.parentElement.scrollHeight;
+    if(!terminal) return;
+    const container = terminal.parentElement;
+    if(container){
+      container.scrollTop = container.scrollHeight;
+    }
   }
 
   function writeTerminalLine(text = '', options = {}){
@@ -147,6 +154,150 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   }
 
+  function collectStats(){
+    return Array.from(document.querySelectorAll('.stat')).map(stat => {
+      const labelEl = stat.querySelector('.label');
+      const valueEl = stat.querySelector('.value');
+      if(!labelEl || !valueEl) return null;
+      const metaEl = stat.querySelector('.meta');
+      const label = labelEl.textContent.trim();
+      const value = valueEl.textContent.trim();
+      const description = metaEl ? metaEl.textContent.trim() : (stat.dataset.description || '');
+      const index = Number(stat.dataset.pi) || parseInt((label.match(/(\d+)/) || [])[1], 10) || null;
+      return { stat, label, value, description, index, valueEl };
+    }).filter(Boolean);
+  }
+
+  function resolveCommand(tokens){
+    if(!tokens.length) return { name: null, args: [], tokens: [], label: '', invokedName: '' };
+    const originalTokens = [...tokens];
+    const [first, ...rest] = originalTokens;
+    const invoked = first || '';
+    const label = originalTokens.join(' ');
+    const commandName = invoked.toLowerCase();
+    if(commandName === 'clear' && rest[0] && rest[0].toLowerCase() === 'logs'){
+      return { name: 'clearlogs', args: rest.slice(1), tokens: originalTokens, label, invokedName: invoked };
+    }
+    return { name: commandName, args: rest, tokens: originalTokens, label, invokedName: invoked };
+  }
+
+  function runResolvedCommand(resolved, options = {}){
+    if(!resolved || !resolved.name) return false;
+    const command = commandCatalog[resolved.name];
+    const invokedName = resolved.invokedName || resolved.name;
+    const prefix = options.prefix !== undefined
+      ? options.prefix
+      : (options.fromHold && options.holdId ? `[H#${options.holdId}] ` : '');
+
+    const writer = (text = '', opts = {}) => {
+      const finalText = prefix ? `${prefix}${text}` : text;
+      writeTerminalLine(finalText, opts);
+    };
+
+    if(!command){
+      if(!options.silent){
+        writer(`Command not recognized: ${invokedName}`);
+        writer("Type 'help' to list available commands.");
+      }
+      return false;
+    }
+
+    const ctx = {
+      raw: options.raw ?? resolved.label ?? '',
+      input: options.input ?? resolved.label ?? '',
+      command: resolved.name,
+      args: Array.isArray(resolved.args) ? [...resolved.args] : [],
+      write: writer,
+      clear: clearTerminal,
+      fromHold: Boolean(options.fromHold),
+      holdId: options.holdId ?? null
+    };
+
+    try{
+      command.action(ctx);
+      return true;
+    }catch(err){
+      console.error('app.js: command failed', err);
+      const message = err && err.message ? err.message : err;
+      writer(`Command '${resolved.name}' failed: ${message}`);
+      return false;
+    }
+  }
+
+  function startHold(resolved, label){
+    if(!resolved || !resolved.name) return;
+    const command = commandCatalog[resolved.name];
+    const invoked = resolved.invokedName || resolved.name;
+    if(!command){
+      writeTerminalLine(`Command not recognized: ${invoked}`);
+      writeTerminalLine("Type 'help' to list available commands.");
+      return;
+    }
+    if(command.allowHold !== true){
+      const display = command.label || invoked;
+      writeTerminalLine(`Command '${display}' cannot be held.`);
+      return;
+    }
+
+    const holdId = holdIdCounter++;
+    const displayLabel = (label && label.length) ? label : (command.label || invoked);
+    const snapshot = {
+      name: resolved.name,
+      args: Array.isArray(resolved.args) ? [...resolved.args] : [],
+      label: displayLabel,
+      invokedName: invoked,
+      tokens: resolved.tokens ? [...resolved.tokens] : []
+    };
+
+    const invoke = () => runResolvedCommand(
+      {
+        name: snapshot.name,
+        args: Array.isArray(snapshot.args) ? [...snapshot.args] : [],
+        label: snapshot.label,
+        invokedName: snapshot.invokedName,
+        tokens: Array.isArray(snapshot.tokens) ? [...snapshot.tokens] : []
+      },
+      {
+        fromHold: true,
+        holdId,
+        raw: snapshot.label,
+        input: snapshot.label
+      }
+    );
+
+    const initialOk = invoke();
+    if(!initialOk){
+      writeTerminalLine(`Hold #${holdId} aborted for '${displayLabel}'.`);
+      return;
+    }
+
+    const intervalId = setInterval(()=>{
+      const ok = invoke();
+      if(!ok){
+        clearInterval(intervalId);
+        holdRegistry.delete(holdId);
+        writeTerminalLine(`Hold #${holdId} stopped due to command failure.`);
+      }
+    }, HOLD_INTERVAL_MS);
+    holdRegistry.set(holdId, { intervalId, label: displayLabel, snapshot });
+    writeTerminalLine(`Holding #${holdId}: ${displayLabel} (every ${HOLD_INTERVAL_MS/1000}s)`);
+  }
+
+  function stopAllHolds({ silent = false } = {}){
+    if(!holdRegistry.size) return [];
+    const released = [];
+    holdRegistry.forEach((entry, id) => {
+      clearInterval(entry.intervalId);
+      released.push({ id, label: entry.label });
+    });
+    holdRegistry.clear();
+    if(!silent && released.length){
+      const summary = released.map(item => `#${item.id}`).join(', ');
+      console.log('app.js: released holds', summary);
+    }
+    return released;
+  }
+
   function appendPrompt(inputValue){
     writeTerminalLine(`> ${inputValue}`);
   }
@@ -155,17 +306,21 @@ document.addEventListener('DOMContentLoaded', () => {
     help: {
       description: 'Show available commands',
       usage: 'help',
+      allowHold: true,
       action(ctx){
         ctx.write('Available commands:');
         Object.entries(commandCatalog).forEach(([name, info]) => {
-          ctx.write(`  ${name.padEnd(7)} ${info.description}`);
-          if(info.usage && info.usage !== name) ctx.write(`      usage: ${info.usage}`);
+          const displayName = info.label || name;
+          ctx.write(`  ${displayName.padEnd(12)} ${info.description}`);
+          if(info.usage && info.usage !== displayName) ctx.write(`      usage: ${info.usage}`);
         });
+        ctx.write('  hold <command>  Hold a command and refresh every second');
       }
     },
     ping: {
       description: 'Test latency to core systems',
       usage: 'ping',
+      allowHold: true,
       action(ctx){
         const latency = (20 + Math.random()*80).toFixed(0);
         ctx.write(`PONG ${latency}ms`);
@@ -205,6 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
     echo: {
       description: 'Echo the provided text',
       usage: 'echo <message>',
+      allowHold: true,
       action(ctx){
         if(!ctx.args.length){
           ctx.write('Usage: echo <message>');
@@ -216,6 +372,7 @@ document.addEventListener('DOMContentLoaded', () => {
     uptime: {
       description: 'Show UI session uptime',
       usage: 'uptime',
+      allowHold: true,
       action(ctx){
         const diff = Date.now() - bootTimestamp;
         const seconds = Math.floor(diff / 1000);
@@ -229,22 +386,23 @@ document.addEventListener('DOMContentLoaded', () => {
     stats: {
       description: 'Snapshot the stats panel values',
       usage: 'stats',
+      allowHold: true,
       action(ctx){
-        const stats = Array.from(document.querySelectorAll('.stat'));
-        if(!stats.length){
+        const entries = collectStats();
+        if(!entries.length){
           ctx.write('No stats currently available.');
           return;
         }
-        stats.forEach(stat => {
-          const label = stat.querySelector('.label');
-          const value = stat.querySelector('.value');
-          if(label && value) ctx.write(`${label.textContent.trim()}: ${value.textContent.trim()}`);
+        entries.forEach(entry => {
+          const suffix = entry.description ? ` - ${entry.description}` : '';
+          ctx.write(`${entry.label}: ${entry.value}${suffix}`);
         });
       }
     },
     logs: {
       description: 'Show recent log entries',
       usage: 'logs [count]',
+      allowHold: true,
       action(ctx){
         if(!logList){
           ctx.write('Log channel not available.');
@@ -259,6 +417,75 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.write(`Showing ${Math.min(count, entries.length)} of ${entries.length} logs:`);
         entries.slice(0, count).forEach(entry => ctx.write(entry.textContent));
       }
+    },
+    clearlogs: {
+      label: 'clear logs',
+      description: 'Clear the log panel entries',
+      action(ctx){
+        if(!logList){
+          ctx.write('Log channel not available.');
+          return;
+        }
+        logList.innerHTML = '';
+        ctx.write('Log buffer cleared.');
+      }
+    },
+    monitor: {
+      description: 'Inspect a specific PI channel',
+      usage: 'monitor pi <1-7>',
+      allowHold: true,
+      action(ctx){
+        if(!ctx.args.length){
+          ctx.write('Usage: monitor pi <1-7>');
+          return;
+        }
+
+        let index = null;
+        const firstArg = ctx.args[0];
+        if(firstArg && firstArg.toLowerCase() === 'pi'){
+          const candidate = Number(ctx.args[1]);
+          index = Number.isFinite(candidate) ? candidate : null;
+        }else{
+          const match = (firstArg || '').match(/(\d+)/);
+          if(match) index = Number(match[1]);
+        }
+
+        if(!Number.isInteger(index) || index < 1 || index > 7){
+          ctx.write('Provide a PI channel between 1 and 7.');
+          ctx.write('Usage: monitor pi <1-7>');
+          return;
+        }
+
+        const entries = collectStats();
+        if(!entries.length){
+          ctx.write('No stats currently available.');
+          return;
+        }
+        const entry = entries.find(item => item.index === index);
+        if(!entry){
+          ctx.write(`PI ${index} feed unavailable.`);
+          return;
+        }
+
+        const descriptor = entry.description ? ` - ${entry.description}` : '';
+        ctx.write(`Monitoring ${entry.label}${descriptor}: ${entry.value}`);
+      }
+    },
+    release: {
+      description: 'Release all active holds',
+      usage: 'release',
+      action(ctx){
+        if(ctx.args && ctx.args.length){
+          ctx.write('release ignores additional parameters; clearing all holds.');
+        }
+        const released = stopAllHolds();
+        if(!released.length){
+          ctx.write('No active holds to release.');
+          return;
+        }
+        const summary = released.map(item => `#${item.id} (${item.label})`).join(', ');
+        ctx.write(`Released holds: ${summary}.`);
+      }
     }
   };
 
@@ -267,27 +494,35 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!trimmed) return;
     const tokens = tokenizeCommand(trimmed);
     if(!tokens.length) return;
-    const commandName = tokens[0].toLowerCase();
-    const command = commandCatalog[commandName];
-    const ctx = {
-      raw: trimmed,
-      input: inputRaw,
-      command: commandName,
-      args: tokens.slice(1),
-      write: writeTerminalLine,
-      clear: clearTerminal
-    };
-    if(command){
-      try{
-        command.action(ctx);
-      }catch(err){
-        console.error('app.js: command failed', err);
-        writeTerminalLine(`Command '${commandName}' failed: ${err.message || err}`);
+    const primary = (tokens[0] || '').toLowerCase();
+
+    if(primary === 'hold'){
+      const holdTokens = tokens.slice(1);
+      if(!holdTokens.length){
+        writeTerminalLine('Usage: hold <command>');
+        return;
       }
-    }else{
-      writeTerminalLine(`Command not recognized: ${commandName}`);
-      writeTerminalLine("Type 'help' to list available commands.");
+      const resolvedHold = resolveCommand(holdTokens);
+      if(!resolvedHold.name){
+        const unknown = holdTokens[0] || '';
+        if(unknown){
+          writeTerminalLine(`Command not recognized: ${unknown}`);
+        }else{
+          writeTerminalLine('Unable to determine command to hold.');
+        }
+        writeTerminalLine("Type 'help' to list available commands.");
+        return;
+      }
+      const label = resolvedHold.label || holdTokens.join(' ');
+      startHold(resolvedHold, label);
+      return;
     }
+
+    const resolved = resolveCommand(tokens);
+    if(!resolved.name){
+      return;
+    }
+    runResolvedCommand(resolved, { raw: trimmed, input: inputRaw });
   }
 
   if(buttons.length===0) console.warn('app.js: no .boot-btn elements found');
@@ -323,11 +558,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const tick = setInterval(()=>{
       span.textContent = line.substring(0,i+1);
-      el.scrollTop = el.scrollHeight;
+      scrollTerminalToBottom();
       i++;
       if(i>=line.length){
         clearInterval(tick);
         el.appendChild(document.createTextNode('\n'));
+        scrollTerminalToBottom();
         setTimeout(()=>typeLines(el, idx+1), 300);
       }
     }, 28 + Math.random()*40);
@@ -345,18 +581,27 @@ document.addEventListener('DOMContentLoaded', () => {
   function animateStats(){
     const vals = document.querySelectorAll('.stat .value');
     vals.forEach(v=>{
-      const target = Number(v.dataset.target) || 0;
-      const isTemp = v.previousElementSibling && v.previousElementSibling.textContent.trim()==='TEMP';
-      const isUptime = v.previousElementSibling && v.previousElementSibling.textContent.trim()==='UPTIME';
-      let start=0, duration=1200 + Math.random()*900;
+      const target = parseFloat(v.dataset.target || '0');
+      const unit = v.dataset.unit || '';
+      const decimals = Number(v.dataset.decimals || 0);
+      const startValue = parseFloat(v.dataset.current || v.dataset.start || '0');
+      const safeStart = Number.isFinite(startValue) ? startValue : 0;
+      const safeTarget = Number.isFinite(target) ? target : 0;
+      const duration = 1200 + Math.random()*900;
       const startTime = performance.now();
       function frame(now){
         const t = Math.min(1, (now-startTime)/duration);
-        const cur = Math.round(t*target);
-        if(isTemp) v.textContent = `${cur}°C`;
-        else if(isUptime) v.textContent = `${cur}s`;
-        else v.textContent = `${cur}%`;
-        if(t<1) requestAnimationFrame(frame);
+        const raw = safeStart + (safeTarget - safeStart) * t;
+        const formatted = decimals > 0 ? raw.toFixed(decimals) : Math.round(raw).toString();
+        v.textContent = unit ? `${formatted}${unit}` : formatted;
+        v.dataset.current = decimals > 0 ? raw.toFixed(decimals) : raw.toString();
+        if(t<1){
+          requestAnimationFrame(frame);
+        }else{
+          const finalFormatted = decimals > 0 ? safeTarget.toFixed(decimals) : Math.round(safeTarget).toString();
+          v.textContent = unit ? `${finalFormatted}${unit}` : finalFormatted;
+          v.dataset.current = decimals > 0 ? safeTarget.toFixed(decimals) : safeTarget.toString();
+        }
       }
       requestAnimationFrame(frame);
     });
@@ -368,6 +613,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // position numpad initially and on resize
   alignNumpad();
   window.addEventListener('resize', alignNumpad);
+  window.addEventListener('beforeunload', ()=>stopAllHolds({ silent: true }));
+  window.addEventListener('pagehide', ()=>stopAllHolds({ silent: true }));
 
   // Command panel behavior
   const cmdForm = document.getElementById('cmd-form');
@@ -457,6 +704,11 @@ document.addEventListener('DOMContentLoaded', () => {
   try{
     const termInner = document.querySelector('.terminal-inner');
     if(termInner){
+      const blockNativeScroll = e => {
+        e.preventDefault();
+      };
+      termInner.addEventListener('wheel', blockNativeScroll, {passive:false});
+      termInner.addEventListener('touchmove', blockNativeScroll, {passive:false});
       let isDown = false, startY = 0, startScroll = 0, activePointerId = null;
       termInner.style.cursor = 'grab';
 
