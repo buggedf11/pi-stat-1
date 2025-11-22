@@ -5,6 +5,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const terminal = document.getElementById('terminal-output');
   const logList = document.getElementById('log-list');
   console.log('app.js: found', buttons.length, 'buttons and', panels.length, 'panels');
+  const socket = window.io ? window.io('/ui') : null;
+  const socketState = { isConnected: false };
+  const knownTasks = new Map();
+  const pendingTasks = new Map();
   // Prevent page-level scrolling but allow wheel/touch inside terminal or log areas
   try{
     ['wheel','touchmove'].forEach(evt => {
@@ -26,6 +30,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function showTab(target){
     panels.forEach(p=>p.classList.toggle('active', p.id===target));
     buttons.forEach(b=>b.classList.toggle('active', b.dataset.target===target));
+    const numpad = document.getElementById('numpad');
+    if(numpad){
+      const shouldHide = target !== 'terminal';
+      numpad.classList.toggle('hidden', shouldHide);
+    }
   }
 
   // Align numpad top with the terminal-frame top (positions .numpad relative to .panels)
@@ -35,6 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const terminalFrame = document.querySelector('.terminal-frame');
       const panelsEl = document.querySelector('.panels');
       if(!numpad || !terminalFrame || !panelsEl) return;
+      if(numpad.classList.contains('hidden')) return;
       const style = window.getComputedStyle(numpad);
       // Respect small-screen fallback where numpad is fixed
       if(style.position === 'fixed') return;
@@ -178,6 +188,136 @@ document.addEventListener('DOMContentLoaded', () => {
         task: taskText
       };
     }).filter(Boolean);
+  }
+
+  function ensurePiCard(piId, label){
+    const grid = document.querySelector('.pi-grid');
+    if(!grid) return null;
+    const idStr = String(piId);
+    let card = grid.querySelector(`.pi-card[data-pi="${idStr}"]`);
+    if(card){
+      const labelEl = card.querySelector('.pi-label');
+      if(labelEl && label) labelEl.textContent = label;
+      return card;
+    }
+    card = document.createElement('article');
+    card.className = 'pi-card';
+    card.dataset.pi = idStr;
+    card.dataset.assignedTask = '';
+    card.dataset.activeTask = '';
+    card.innerHTML = `
+      <header class="pi-header">
+        <h2 class="pi-label">${label ? label : 'PI ' + idStr}</h2>
+        <span class="pi-task" data-metric="task">Idle</span>
+      </header>
+      <div class="pi-metrics">
+        <div class="metric">
+          <span class="label">CPU</span>
+          <span class="value" data-metric="cpu" data-unit="%" data-target="0">0%</span>
+        </div>
+        <div class="metric">
+          <span class="label">RAM</span>
+          <span class="value" data-metric="ram" data-unit="%" data-target="0">0%</span>
+        </div>
+        <div class="metric">
+          <span class="label">TASK</span>
+          <span class="value" data-metric="task">Idle</span>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+    return card;
+  }
+
+  function applyPiStat(card, stat){
+    const changed = [];
+    if(!card || !stat) return changed;
+    const assignedTextRaw = typeof stat.assigned_task === 'string' ? stat.assigned_task.trim() : '';
+    const activeTextRaw = typeof stat.active_task === 'string' ? stat.active_task.trim() : '';
+    const taskText = assignedTextRaw || activeTextRaw || 'Idle';
+    card.dataset.assignedTask = assignedTextRaw;
+    card.dataset.activeTask = activeTextRaw;
+    const labelEl = card.querySelector('.pi-label');
+    if(labelEl && stat.label) labelEl.textContent = stat.label;
+    const headerTaskEl = card.querySelector('.pi-task[data-metric="task"]');
+    if(headerTaskEl) headerTaskEl.textContent = taskText;
+    const bodyTaskEl = card.querySelector('.value[data-metric="task"]');
+    if(bodyTaskEl) bodyTaskEl.textContent = taskText;
+
+    const cpuEl = card.querySelector('.value[data-metric="cpu"]');
+    const cpuPercent = Number(stat.cpu_percent);
+    if(cpuEl && Number.isFinite(cpuPercent)){
+      cpuEl.dataset.target = cpuPercent.toFixed(1);
+      cpuEl.dataset.unit = '%';
+      cpuEl.dataset.decimals = '1';
+      changed.push(cpuEl);
+    }
+
+    const ramEl = card.querySelector('.value[data-metric="ram"]');
+    const ramPercent = Number(stat.ram_percent);
+    if(ramEl && Number.isFinite(ramPercent)){
+      ramEl.dataset.target = ramPercent.toFixed(0);
+      ramEl.dataset.unit = '%';
+      ramEl.dataset.decimals = '0';
+      const used = Number(stat.ram_used_gb);
+      const total = Number(stat.ram_total_gb);
+      if(Number.isFinite(used) && Number.isFinite(total)){
+        ramEl.title = `${used.toFixed(1)} / ${total.toFixed(1)} GB`;
+      }else if(Number.isFinite(used)){
+        ramEl.title = `${used.toFixed(1)} GB used`;
+      }else{
+        ramEl.removeAttribute('title');
+      }
+      changed.push(ramEl);
+    }
+
+    const online = stat.online !== false;
+    card.dataset.online = online ? '1' : '0';
+    return changed;
+  }
+
+  function handleStatsSnapshot(payload){
+    if(!payload) return;
+    const items = Array.isArray(payload) ? payload : Object.values(payload);
+    const nodes = [];
+    items.forEach(stat => {
+      if(!stat || stat.pi_id === undefined || stat.pi_id === null) return;
+      const card = ensurePiCard(stat.pi_id, stat.label);
+      if(!card) return;
+      const changed = applyPiStat(card, stat);
+      if(changed.length) nodes.push(...changed);
+    });
+    if(nodes.length) animateStats(nodes);
+  }
+
+  function handleTaskCatalog(payload){
+    knownTasks.clear();
+    if(!payload) return;
+    const items = Array.isArray(payload) ? payload : Object.values(payload);
+    items.forEach(item => {
+      if(!item || !item.id) return;
+      knownTasks.set(item.id, item);
+    });
+  }
+
+  function resolveTaskLabel(ref){
+    if(!ref) return 'task';
+    const taskId = ref.task_id || ref.taskId;
+    if(ref.request_id && pendingTasks.has(ref.request_id)){
+      const pending = pendingTasks.get(ref.request_id);
+      if(pending && pending.taskId){
+        const pendingInfo = knownTasks.get(pending.taskId);
+        if(pendingInfo && pendingInfo.label) return pendingInfo.label;
+        return pending.taskId;
+      }
+    }
+    if(taskId && knownTasks.has(taskId)){
+      const data = knownTasks.get(taskId);
+      if(data && data.label) return data.label;
+    }
+    if(ref.label) return ref.label;
+    if(taskId) return taskId;
+    return 'task';
   }
 
   function resolveCommand(tokens){
@@ -520,6 +660,146 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.write('Log buffer cleared.');
       }
     },
+    task: {
+      description: 'List or run backend tasks',
+      usage: 'task [list|run <task-id> [pi-id]|assign <machine> <task-label>]',
+      action(ctx){
+        if(!socket){
+          ctx.write('Socket interface unavailable.');
+          return;
+        }
+        const sub = (ctx.args[0] || '').toLowerCase();
+        if(!sub || sub === 'list'){
+          if(!knownTasks.size){
+            ctx.write('Task catalog not available yet. Waiting for controller...');
+            if(socketState.isConnected){
+              socket.emit('catalog:request');
+            }
+            return;
+          }
+          ctx.write('Available tasks:');
+          knownTasks.forEach((info, id) => {
+            const desc = info && info.description ? ' - ' + info.description : '';
+            ctx.write(`  ${id}${desc}`);
+          });
+          ctx.write('Run with: task run <task-id> [pi-id]');
+          ctx.write('Assign label: task assign <machine> <task-label>');
+          return;
+        }
+
+        if(sub === 'run'){
+          const taskId = ctx.args[1];
+          const targetPi = ctx.args[2] || 'local';
+          if(!taskId){
+            ctx.write('Usage: task run <task-id> [pi-id]');
+            return;
+          }
+          if(!knownTasks.has(taskId)){
+            ctx.write(`Task '${taskId}' not recognised.`);
+            ctx.write('Use task list to view available tasks.');
+            return;
+          }
+          if(!socketState.isConnected){
+            ctx.write('Controller connection offline; cannot run task.');
+            return;
+          }
+          ctx.write(`Dispatching task '${taskId}' to ${targetPi}...`);
+          socket.emit('run_task', { task: taskId, pi_id: targetPi }, ack => {
+            if(!ack){
+              ctx.write('No acknowledgement from controller.');
+              return;
+            }
+            if(ack.error){
+              ctx.write(`Controller rejected task: ${ack.error}`);
+              return;
+            }
+            if(ack.request_id){
+              pendingTasks.set(ack.request_id, { taskId, piId: targetPi });
+            }
+            ctx.write(ack.message || 'Task accepted.');
+          });
+          return;
+        }
+
+        if(sub === 'assign'){
+          if(ctx.args.length < 3){
+            ctx.write('Usage: task assign <machine> <task-label>');
+            return;
+          }
+          if(!socketState.isConnected){
+            ctx.write('Controller connection offline; cannot assign task.');
+            return;
+          }
+          const piRef = ctx.args[1];
+          const taskLabel = ctx.args.slice(2).join(' ').trim();
+          if(!taskLabel){
+            ctx.write('Provide a task label to assign.');
+            return;
+          }
+          ctx.write(`Assigning '${taskLabel}' to ${piRef}...`);
+          socket.emit('assign_task', { pi: piRef, task: taskLabel }, ack => {
+            if(!ack){
+              ctx.write('No acknowledgement from controller.');
+              return;
+            }
+            if(ack.error){
+              ctx.write(`Controller rejected assignment: ${ack.error}`);
+              return;
+            }
+            ctx.write(ack.message || 'Assignment recorded.');
+          });
+          return;
+        }
+
+        ctx.write('Usage: task [list|run <task-id> [pi-id]|assign <machine> <task-label>]');
+      }
+    },
+    assign: {
+      description: 'Assign metadata to a machine',
+      usage: 'assign name <machine> <new-name>',
+      action(ctx){
+        if(!socket){
+          ctx.write('Socket interface unavailable.');
+          return;
+        }
+        const sub = (ctx.args[0] || '').toLowerCase();
+        if(sub === 'name'){
+          if(ctx.args.length < 3){
+            ctx.write('Usage: assign name <machine> <new-name>');
+            return;
+          }
+          if(!socketState.isConnected){
+            ctx.write('Controller connection offline; cannot rename machine.');
+            return;
+          }
+          const piRef = ctx.args[1];
+          const newName = ctx.args.slice(2).join(' ').trim();
+          if(!piRef){
+            ctx.write('Specify the machine to rename.');
+            return;
+          }
+          if(!newName){
+            ctx.write('Specify the new name.');
+            return;
+          }
+          ctx.write(`Renaming ${piRef} to '${newName}'...`);
+          socket.emit('assign_name', { pi: piRef, name: newName }, ack => {
+            if(!ack){
+              ctx.write('No acknowledgement from controller.');
+              return;
+            }
+            if(ack.error){
+              ctx.write(`Controller rejected rename: ${ack.error}`);
+              return;
+            }
+            ctx.write(ack.message || 'Rename recorded.');
+          });
+          return;
+        }
+
+        ctx.write('Usage: assign name <machine> <new-name>');
+      }
+    },
     monitor: {
       description: 'Inspect a specific PI channel',
       usage: 'monitor pi <1-7>',
@@ -673,8 +953,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Stats animation
-  function animateStats(){
-    const vals = document.querySelectorAll('.metric .value[data-target]');
+  function animateStats(targetNodes){
+    const vals = targetNodes
+      ? Array.from(targetNodes).filter(Boolean)
+      : Array.from(document.querySelectorAll('.metric .value[data-target]'));
     vals.forEach(v=>{
       const target = parseFloat(v.dataset.target || '0');
       const unit = v.dataset.unit || '';
@@ -702,7 +984,71 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  function setupSocket(){
+    if(!socket){
+      appendLog('Socket.IO client unavailable; realtime features disabled.');
+      return;
+    }
+
+    socket.on('connect', ()=>{
+      socketState.isConnected = true;
+      pendingTasks.clear();
+      appendLog('Connected to controller.');
+      socket.emit('catalog:request');
+    });
+
+    socket.on('disconnect', ()=>{
+      socketState.isConnected = false;
+      appendLog('Disconnected from controller.');
+    });
+
+    socket.on('stats_snapshot', handleStatsSnapshot);
+    socket.on('task_catalog', handleTaskCatalog);
+
+    socket.on('log', payload => {
+      if(payload && payload.message){
+        appendLog(payload.message);
+      }
+    });
+
+    socket.on('task_started', payload => {
+      if(!payload) return;
+      const label = resolveTaskLabel(payload);
+      const piId = payload.pi_id || 'local';
+      if(payload.request_id){
+        pendingTasks.set(payload.request_id, { taskId: payload.task_id, piId });
+      }
+      writeTerminalLine(`[task] ${label} started on ${piId}.`);
+    });
+
+    socket.on('task_output', payload => {
+      if(!payload || !payload.line) return;
+      writeTerminalLine(payload.line, { className: 'task-output' });
+    });
+
+    socket.on('task_finished', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || (payload.request_id && pendingTasks.get(payload.request_id)?.piId) || 'local';
+      if(payload.request_id) pendingTasks.delete(payload.request_id);
+      const label = resolveTaskLabel(payload);
+      const exitCode = payload.exit_code;
+      const ok = exitCode === 0 || exitCode === null || exitCode === undefined;
+      const message = ok ? 'completed successfully' : `exited with code ${exitCode}`;
+      writeTerminalLine(`[task] ${label} on ${piId} ${message}.`);
+    });
+
+    socket.on('task_error', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || (payload.request_id && pendingTasks.get(payload.request_id)?.piId) || 'local';
+      if(payload.request_id) pendingTasks.delete(payload.request_id);
+      const label = resolveTaskLabel(payload);
+      const msg = payload.error || 'Unknown error';
+      writeTerminalLine(`[task] ${label} on ${piId} failed: ${msg}`);
+    });
+  }
+
   // Kick things off
+  setupSocket();
   typeLines(terminal);
   animateStats();
   // position numpad initially and on resize
@@ -837,13 +1183,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }catch(err){ console.warn('app.js: drag-to-scroll setup failed', err); }
 
   // Periodic small updates
-  setInterval(()=>{
-    // simulate small stat changes (no-op but safe)
-    document.querySelectorAll('.metric .value[data-target]').forEach(v=>{
-      const base = Number(v.getAttribute('data-target') || v.dataset.target) || 0;
-      // could add small random wiggle here in future
-    });
-    animateStats();
-    appendLog('Telemetry tick');
-  }, 8000);
+  if(!socket){
+    setInterval(()=>{
+      document.querySelectorAll('.metric .value[data-target]').forEach(v=>{
+        const base = Number(v.getAttribute('data-target') || v.dataset.target) || 0;
+        v.setAttribute('data-target', base.toString());
+      });
+      animateStats();
+    }, 8000);
+  }
 });

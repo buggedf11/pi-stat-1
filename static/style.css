@@ -46,6 +46,8 @@ body{
 
 .pi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}
 .pi-card{background:linear-gradient(180deg, rgba(0,0,0,0.02), rgba(0,0,0,0.05));padding:18px;border-radius:10px;border:1px solid rgba(57,255,20,0.06);box-shadow:var(--glow);display:flex;flex-direction:column;gap:16px;min-height:180px}
+.pi-card[data-online="0"]{opacity:0.45;filter:saturate(0.4)}
+.pi-card[data-online="0"] .pi-label{color:rgba(99,179,107,0.5)}
 .pi-header{display:flex;flex-direction:column;gap:4px}
 .pi-label{margin:0;font-size:18px;color:var(--accent);letter-spacing:1px;text-transform:uppercase}
 .pi-task{font-size:12px;color:rgba(99,179,107,0.78);letter-spacing:0.8px;text-transform:uppercase}
@@ -111,6 +113,7 @@ body{
 @keyframes caret{50%{border-right-color: transparent}}
 
 .terminal-output span.caret{display:inline-block;border-right:2px solid var(--accent);animation:caret .9s steps(1) infinite}
+.terminal-output span.task-output{display:block;color:var(--accent2)}
 
 /* Responsive */
 @media (max-width:1200px){
