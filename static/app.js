@@ -27,6 +27,16 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('app.js: scroll prevention enabled (except inside terminal/log)');
   }catch(err){ console.warn('app.js: could not attach scroll prevention', err); }
 
+  const bootTimestamp = Date.now();
+  const root = document.documentElement;
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  const themePresets = {
+    green: { accent:'#39ff14', accent2:'#7eff3f', muted:'#63b36b', bg:'#000a00', panel:'#001200' },
+    amber: { accent:'#ffb347', accent2:'#ffd166', muted:'#ffc680', bg:'#1d1200', panel:'#2a1a00' },
+    blue: { accent:'#5ad1ff', accent2:'#89e0ff', muted:'#7aa6ff', bg:'#00111d', panel:'#001a2b' },
+    purple: { accent:'#c77dff', accent2:'#e0aaff', muted:'#b794f6', bg:'#140016', panel:'#1f0026' }
+  };
+
   function showTab(target){
     panels.forEach(p=>p.classList.toggle('active', p.id===target));
     buttons.forEach(b=>b.classList.toggle('active', b.dataset.target===target));
@@ -47,23 +57,45 @@ document.addEventListener('DOMContentLoaded', () => {
       if(numpad.classList.contains('hidden')) return;
       const style = window.getComputedStyle(numpad);
       // Respect small-screen fallback where numpad is fixed
-      if(style.position === 'fixed') return;
+      // if fixed, we'll still adjust terminal size but skip horizontal alignment
+      const isFixed = style.position === 'fixed';
       const termRect = terminalFrame.getBoundingClientRect();
       const panelsRect = panelsEl.getBoundingClientRect();
       const top = Math.max(0, Math.round(termRect.top - panelsRect.top));
-      numpad.style.top = top + 'px';
+      if(!isFixed){
+        numpad.style.top = top + 'px';
+      }
+      // adjust terminal height so numpad fits on small screens
+      adjustTerminalForNumpad();
     }catch(err){ console.warn('app.js: alignNumpad failed', err); }
   }
 
-  const bootTimestamp = Date.now();
-  const root = document.documentElement;
-  const themeMeta = document.querySelector('meta[name="theme-color"]');
-  const themePresets = {
-    green: { accent:'#39ff14', accent2:'#7eff3f', muted:'#63b36b', bg:'#000a00', panel:'#001200' },
-    amber: { accent:'#ffb347', accent2:'#ffd166', muted:'#ffc680', bg:'#1d1200', panel:'#2a1a00' },
-    blue: { accent:'#5ad1ff', accent2:'#89e0ff', muted:'#7aa6ff', bg:'#00111d', panel:'#001a2b' },
-    purple: { accent:'#c77dff', accent2:'#e0aaff', muted:'#b794f6', bg:'#140016', panel:'#1f0026' }
-  };
+  function adjustTerminalForNumpad(){
+    try{
+      const numpad = document.getElementById('numpad');
+      const terminalInner = document.querySelector('.terminal-inner');
+      const bootBar = document.querySelector('.boot-bar');
+      const hud = document.querySelector('.hud');
+      if(!terminalInner) return;
+
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      let reserved = 0;
+      if(bootBar) reserved += bootBar.getBoundingClientRect().height;
+      if(hud) reserved += hud.getBoundingClientRect().height;
+
+      let numpadH = 0;
+      if(numpad && !numpad.classList.contains('hidden')){
+        // include some safe margin for the numpad
+        numpadH = Math.ceil(numpad.getBoundingClientRect().height) + 8;
+      }
+
+      // panels have bottom padding/space for boot bar — mirror CSS value (80)
+      const panelsBottomSpace = 80;
+      // compute available space for terminal-inner, clamp to sensible min/max
+      const available = Math.max(140, vh - reserved - numpadH - panelsBottomSpace - 24);
+      terminalInner.style.height = available + 'px';
+    }catch(err){ console.warn('app.js: adjustTerminalForNumpad failed', err); }
+  }
 
   const holdRegistry = new Map();
   let holdIdCounter = 1;
@@ -190,11 +222,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }).filter(Boolean);
   }
 
+  // Ensure a .pi-card exists for the given piId. Create if missing.
   function ensurePiCard(piId, label){
-    const grid = document.querySelector('.pi-grid');
-    if(!grid) return null;
+    if(piId === undefined || piId === null) return null;
     const idStr = String(piId);
-    let card = grid.querySelector(`.pi-card[data-pi="${idStr}"]`);
+    const grid = document.querySelector('.pi-grid') || document.querySelector('.pi-cards') || document.querySelector('.panels') || document.body;
+    let card = (grid && grid.querySelector) ? grid.querySelector(`.pi-card[data-pi="${idStr}"]`) : null;
     if(card){
       const labelEl = card.querySelector('.pi-label');
       if(labelEl && label) labelEl.textContent = label;
@@ -225,7 +258,11 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
     `;
-    grid.appendChild(card);
+    try{
+      grid.appendChild(card);
+    }catch(err){
+      document.body.appendChild(card);
+    }
     return card;
   }
 
@@ -512,7 +549,7 @@ document.addEventListener('DOMContentLoaded', () => {
           ctx.write(`Refresh interval: ${refreshSeconds}s`);
           ctx.write(listLine);
           ctx.write('Use release to clear all holds.');
-          ctx.write('Example: hold monitor pi 3');
+          ctx.write('Example: hold stats');
         };
 
         if(isList){
@@ -800,47 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.write('Usage: assign name <machine> <new-name>');
       }
     },
-    monitor: {
-      description: 'Inspect a specific PI channel',
-      usage: 'monitor pi <1-7>',
-      allowHold: true,
-      action(ctx){
-        if(!ctx.args.length){
-          ctx.write('Usage: monitor pi <1-7>');
-          return;
-        }
-
-        let index = null;
-        const firstArg = ctx.args[0];
-        if(firstArg && firstArg.toLowerCase() === 'pi'){
-          const candidate = Number(ctx.args[1]);
-          index = Number.isFinite(candidate) ? candidate : null;
-        }else{
-          const match = (firstArg || '').match(/(\d+)/);
-          if(match) index = Number(match[1]);
-        }
-
-        if(!Number.isInteger(index) || index < 1 || index > 7){
-          ctx.write('Provide a PI channel between 1 and 7.');
-          ctx.write('Usage: monitor pi <1-7>');
-          return;
-        }
-
-        const entries = collectStats();
-        if(!entries.length){
-          ctx.write('No stats currently available.');
-          return;
-        }
-        const entry = entries.find(item => item.index === index);
-        if(!entry){
-          ctx.write(`PI ${index} feed unavailable.`);
-          return;
-        }
-
-        const task = entry.task ? ` — ${entry.task}` : '';
-        ctx.write(`Monitoring ${entry.label}${task}: CPU ${entry.cpu} | RAM ${entry.ram}`);
-      }
-    }
+    
   };
 
   function executeCommand(inputRaw){
