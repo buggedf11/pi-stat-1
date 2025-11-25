@@ -87,3 +87,75 @@ The Pi now sends CPU/RAM updates and is ready to run commands you trigger from t
 - If a program exits on its own, the terminal stops streaming automatically.
 - Stuck output? Send `close_program` again with the same `request_id` to force-stop it.
 - Renamed machines and task notes persist inside the `state/` folder.
+
+## Keep Everything Running After Reboot
+
+### Linux / Raspberry Pi (systemd)
+Create a service for each Python process so it restarts automatically.
+
+1. Find the full paths:
+   ```bash
+   which python3
+   pwd   # run inside this repo to get the project path
+   ```
+2. Create a unit file for the controller (on the host running `main.py`):
+   ```bash
+   sudo nano /etc/systemd/system/pi-stat-controller.service
+   ```
+   Paste:
+   ```ini
+   [Unit]
+   Description=Pi Stat Controller
+   After=network.target
+
+   [Service]
+   WorkingDirectory=/path/to/pi-stat-1
+   ExecStart=/usr/bin/python3 main.py
+   Restart=on-failure
+   User=pi   # change to the account that owns the files
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+3. Create a similar unit on each Pi for the agent:
+   ```bash
+   sudo nano /etc/systemd/system/pi-stat-agent.service
+   ```
+   ```ini
+   [Unit]
+   Description=Pi Stat Agent
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   WorkingDirectory=/path/to/pi-stat-1
+   ExecStart=/usr/bin/python3 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
+   Restart=on-failure
+   User=pi
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+4. Enable the services so they start on boot and restart if they crash:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now pi-stat-controller   # or pi-stat-agent
+   sudo systemctl status pi-stat-controller
+   ```
+
+### Windows (Task Scheduler)
+1. Open **Task Scheduler** → **Create Task**.
+2. **General** tab: set "Run whether user is logged on or not" and select a user account with access to the repo.
+3. **Triggers** tab: add **At startup** (or **At log on** if you prefer).
+4. **Actions** tab: add an action **Start a program** with:
+   - *Program/script*: `powershell.exe`
+   - *Arguments*: `-ExecutionPolicy Bypass -File "C:\path\to\pi-stat-1\scripts\start-agent.ps1"`
+5. Create `scripts/start-agent.ps1` to activate your venv (if any) and run the agent:
+   ```powershell
+   Set-Location "C:\path\to\pi-stat-1"
+   # & .\.venv\Scripts\Activate.ps1   # uncomment if using a virtualenv
+   python pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id win-node --label "Windows"
+   ```
+6. Save the task. The agent restarts on every boot; if you tick "Restart on failure" in **Settings**, Windows will relaunch it if it exits unexpectedly.
+
+Use the same pattern to keep the controller alive on Windows—point the task to `python main.py` instead of `pi_agent.py`.
