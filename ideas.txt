@@ -4,4 +4,6 @@
 4.  create a folder that has different programs in each
 5.  set up a txt file that has copy paste commands for each pi to easily set it up
 6.  intergrate screen on homelab
+7.  Extend the Flask backend to send terminal commands to Pi agents, exec them via subprocess, and stream stdout/stderr back to the UI.
+8.  Adjust the main terminal so it only shows global/meta output by default; per-Pi logs appear only when a Pi card is selected.
 

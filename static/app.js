@@ -9,6 +9,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const socketState = { isConnected: false };
   const knownTasks = new Map();
   const pendingTasks = new Map();
+  const pendingTerminal = new Map();
+  const TERMINAL_CHANNEL_GLOBAL = 'global';
+  const TERMINAL_CHANNEL_META = 'meta';
+  const channelForPi = piId => (piId ? `pi:${piId}` : TERMINAL_CHANNEL_GLOBAL);
+  let activeTerminalChannel = TERMINAL_CHANNEL_GLOBAL;
+  let activePiSelection = null;
   // Prevent page-level scrolling but allow wheel/touch inside terminal or log areas
   try{
     ['wheel','touchmove'].forEach(evt => {
@@ -41,9 +47,14 @@ document.addEventListener('DOMContentLoaded', () => {
     panels.forEach(p=>p.classList.toggle('active', p.id===target));
     buttons.forEach(b=>b.classList.toggle('active', b.dataset.target===target));
     const numpad = document.getElementById('numpad');
+    const symbolPad = document.getElementById('symbol-pad');
     if(numpad){
       const shouldHide = target !== 'terminal';
       numpad.classList.toggle('hidden', shouldHide);
+    }
+    if(symbolPad){
+      const shouldHide = target !== 'terminal';
+      symbolPad.classList.toggle('hidden', shouldHide);
     }
   }
 
@@ -51,20 +62,27 @@ document.addEventListener('DOMContentLoaded', () => {
   function alignNumpad(){
     try{
       const numpad = document.getElementById('numpad');
+      const symbolPad = document.getElementById('symbol-pad');
       const terminalFrame = document.querySelector('.terminal-frame');
       const panelsEl = document.querySelector('.panels');
-      if(!numpad || !terminalFrame || !panelsEl) return;
-      if(numpad.classList.contains('hidden')) return;
-      const style = window.getComputedStyle(numpad);
-      // Only attempt to set `top` when the numpad is a positioned element
-      // (absolute/relative/sticky). If it's static/non-positioned we skip top.
-      const posType = style.position;
+      if(!terminalFrame || !panelsEl) return;
       const termRect = terminalFrame.getBoundingClientRect();
       const panelsRect = panelsEl.getBoundingClientRect();
-      const top = Math.max(0, Math.round(termRect.top - panelsRect.top));
-      if(posType === 'absolute' || posType === 'fixed' || posType === 'sticky'){
-        numpad.style.top = top + 'px';
-      }
+      const baseTop = Math.max(0, Math.round(termRect.top - panelsRect.top));
+
+      const placePad = (pad, offset = 0) => {
+        if(!pad || pad.classList.contains('hidden')) return 0;
+        const style = window.getComputedStyle(pad);
+        const posType = style.position;
+        if(posType === 'absolute' || posType === 'fixed' || posType === 'sticky'){
+          pad.style.top = baseTop + offset + 'px';
+        }
+        const rect = pad.getBoundingClientRect();
+        return Math.ceil(rect.height || 0);
+      };
+
+      const numpadHeight = placePad(numpad, 0);
+      placePad(symbolPad, numpadHeight ? numpadHeight + 12 : 0);
       // adjust terminal height so numpad fits on small screens
       adjustTerminalForNumpad();
     }catch(err){ console.warn('app.js: alignNumpad failed', err); }
@@ -73,6 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function adjustTerminalForNumpad(){
     try{
       const numpad = document.getElementById('numpad');
+      const symbolPad = document.getElementById('symbol-pad');
       const terminalInner = document.querySelector('.terminal-inner');
       const bootBar = document.querySelector('.boot-bar');
       const hud = document.querySelector('.hud');
@@ -88,6 +107,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // include some safe margin for the numpad
         numpadH = Math.ceil(numpad.getBoundingClientRect().height) + 8;
       }
+      let symbolPadH = 0;
+      if(symbolPad && !symbolPad.classList.contains('hidden')){
+        symbolPadH = Math.ceil(symbolPad.getBoundingClientRect().height) + 8;
+      }
 
       // panels have bottom padding/space for boot bar — mirror CSS value (80)
       const panelsBottomSpace = 80;
@@ -95,7 +118,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Raise the minimum so the terminal shows ~15 lines (~14px font, 1.5 line-height => ~21px/line => ~315px).
       // Add padding/borders margin so choose ~340px as a comfortable floor for 15 lines.
       const MIN_TERMINAL_PX = 340;
-      const available = Math.max(MIN_TERMINAL_PX, vh - reserved - numpadH - panelsBottomSpace - 24);
+      const accessoryHeight = numpadH + symbolPadH;
+      const available = Math.max(MIN_TERMINAL_PX, vh - reserved - accessoryHeight - panelsBottomSpace - 24);
       terminalInner.style.height = available + 'px';
     }catch(err){ console.warn('app.js: adjustTerminalForNumpad failed', err); }
   }
@@ -116,11 +140,137 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!terminal) return;
     const line = document.createElement('span');
     const content = `${text ?? ''}`;
+    const channel = options.channel || TERMINAL_CHANNEL_GLOBAL;
+    line.dataset.channel = channel;
     line.textContent = options.noNewline ? content : `${content}\n`;
     if(options.className) line.className = options.className;
     if(options.color) line.style.color = options.color;
     terminal.appendChild(line);
+    applyTerminalFilterToLine(line);
     scrollTerminalToBottom();
+  }
+
+  function applyTerminalFilterToLine(node){
+    if(!node || node.nodeType !== 1) return;
+    const channel = node.dataset.channel || TERMINAL_CHANNEL_GLOBAL;
+    if(activeTerminalChannel === TERMINAL_CHANNEL_GLOBAL){
+      if(channel === TERMINAL_CHANNEL_GLOBAL || channel === TERMINAL_CHANNEL_META){
+        node.style.display = '';
+      }else{
+        node.style.display = 'none';
+      }
+      return;
+    }
+    if(channel === activeTerminalChannel || channel === TERMINAL_CHANNEL_META){
+      node.style.display = '';
+    }else{
+      node.style.display = 'none';
+    }
+  }
+
+  function applyTerminalFilterToAll(){
+    if(!terminal) return;
+    Array.from(terminal.children).forEach(applyTerminalFilterToLine);
+  }
+
+  function setActiveTerminalChannel(channel, { force = false } = {}){
+    const resolved = channel || TERMINAL_CHANNEL_GLOBAL;
+    if(!force && resolved === activeTerminalChannel) return;
+    activeTerminalChannel = resolved;
+    applyTerminalFilterToAll();
+    scrollTerminalToBottom();
+  }
+
+  function hasLinesForChannel(channel){
+    if(!terminal) return false;
+    return Array.from(terminal.children || []).some(node => node.dataset && node.dataset.channel === channel);
+  }
+
+  function removeEmptyBanner(channel){
+    if(!terminal || !channel) return;
+    Array.from(terminal.querySelectorAll('.terminal-banner--empty')).forEach(node => {
+      if(node.dataset && node.dataset.channel === channel){
+        node.remove();
+      }
+    });
+  }
+
+  function clearPiSelection({ showBanner = true } = {}){
+    if(!activePiSelection){
+      setActiveTerminalChannel(TERMINAL_CHANNEL_GLOBAL, { force: true });
+      return;
+    }
+    document.querySelectorAll('.pi-card.selected').forEach(card => {
+      card.classList.remove('selected');
+      card.setAttribute('aria-pressed', 'false');
+    });
+    activePiSelection = null;
+    setActiveTerminalChannel(TERMINAL_CHANNEL_GLOBAL, { force: true });
+    if(showBanner){
+      writeTerminalLine('[view] Showing all console channels.', { className: 'terminal-banner', channel: TERMINAL_CHANNEL_META });
+    }
+  }
+
+  function sendTerminalCommand(commandText){
+    if(!activePiSelection){
+      writeTerminalLine('No Pi selected. Choose a device in STATS to route terminal commands.');
+      return;
+    }
+    const piId = activePiSelection.id;
+    const channel = channelForPi(piId);
+    const trimmed = (commandText || '').trim();
+    if(!trimmed){
+      writeTerminalLine('Cannot execute an empty command.', { channel, className: 'terminal-banner' });
+      return;
+    }
+    if(!socket || !socketState.isConnected){
+      writeTerminalLine('Controller connection unavailable; command not sent.', { channel, className: 'terminal-banner' });
+      return;
+    }
+    removeEmptyBanner(channel);
+    writeTerminalLine(`[terminal] Dispatching to ${activePiSelection.label || piId}…`, { channel, className: 'terminal-banner' });
+    socket.emit('terminal_command', { pi_id: piId, command: trimmed }, ack => {
+      if(!ack){
+        writeTerminalLine('No acknowledgement from controller.', { channel, className: 'terminal-banner' });
+        return;
+      }
+      if(ack.error){
+        writeTerminalLine(`Controller rejected command: ${ack.error}`, { channel, className: 'terminal-banner' });
+        return;
+      }
+      if(ack.request_id){
+        pendingTerminal.set(ack.request_id, { piId, command: trimmed });
+      }
+      if(ack.message){
+        writeTerminalLine(ack.message, { channel, className: 'terminal-banner' });
+      }
+    });
+  }
+
+  function selectPiCard(card, piId, label){
+    if(!piId) return;
+    document.querySelectorAll('.pi-card.selected').forEach(node => {
+      if(node !== card){
+        node.classList.remove('selected');
+        node.setAttribute('aria-pressed', 'false');
+      }
+    });
+    if(card){
+      card.classList.add('selected');
+      card.setAttribute('aria-pressed', 'true');
+    }
+    const displayLabel = label || piId;
+    const channel = channelForPi(piId);
+    activePiSelection = { id: piId, label: displayLabel };
+    setActiveTerminalChannel(channel, { force: true });
+    showTab('terminal');
+    alignNumpad();
+    const suffix = displayLabel !== piId ? ` (${piId})` : '';
+    writeTerminalLine(`[view] Showing output for ${displayLabel}${suffix}. Click TERMINAL to reset.`, { className: 'terminal-banner', channel: TERMINAL_CHANNEL_META });
+    removeEmptyBanner(channel);
+    if(!hasLinesForChannel(channel)){
+      writeTerminalLine('No console output received yet for this device.', { className: 'terminal-banner terminal-banner--empty', channel });
+    }
   }
 
   function clearTerminal(){
@@ -232,6 +382,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const grid = document.querySelector('.pi-grid') || document.querySelector('.pi-cards') || document.querySelector('.panels') || document.body;
     let card = (grid && grid.querySelector) ? grid.querySelector(`.pi-card[data-pi="${idStr}"]`) : null;
     if(card){
+      if(!card.hasAttribute('role')) card.setAttribute('role', 'button');
+      if(!card.hasAttribute('tabindex')) card.tabIndex = 0;
+      if(!card.hasAttribute('aria-pressed')) card.setAttribute('aria-pressed', 'false');
       const labelEl = card.querySelector('.pi-label');
       if(labelEl && label) labelEl.textContent = label;
       return card;
@@ -241,6 +394,9 @@ document.addEventListener('DOMContentLoaded', () => {
     card.dataset.pi = idStr;
     card.dataset.assignedTask = '';
     card.dataset.activeTask = '';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-pressed', 'false');
     card.innerHTML = `
       <header class="pi-header">
         <h2 class="pi-label">${label ? label : 'PI ' + idStr}</h2>
@@ -502,7 +658,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function appendPrompt(inputValue){
-    writeTerminalLine(`> ${inputValue}`);
+    const channel = activePiSelection ? channelForPi(activePiSelection.id) : TERMINAL_CHANNEL_GLOBAL;
+    writeTerminalLine(`> ${inputValue}`, { channel });
   }
 
   const commandCatalog = {
@@ -846,6 +1003,10 @@ document.addEventListener('DOMContentLoaded', () => {
   function executeCommand(inputRaw){
     const trimmed = inputRaw.trim();
     if(!trimmed) return;
+    if(activePiSelection){
+      sendTerminalCommand(trimmed);
+      return;
+    }
     const tokens = tokenizeCommand(trimmed);
     if(!tokens.length) return;
     const primary = (tokens[0] || '').toLowerCase();
@@ -912,6 +1073,9 @@ document.addEventListener('DOMContentLoaded', () => {
       showTab(t);
       // re-align numpad when panels change
       alignNumpad();
+      if(t === 'terminal'){
+        clearPiSelection();
+      }
     });
   });
 
@@ -933,7 +1097,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const line = lines[idx];
     let i=0;
     const span = document.createElement('span');
+    span.dataset.channel = TERMINAL_CHANNEL_GLOBAL;
     el.appendChild(span);
+    applyTerminalFilterToLine(span);
 
     const tick = setInterval(()=>{
       span.textContent = line.substring(0,i+1);
@@ -941,7 +1107,12 @@ document.addEventListener('DOMContentLoaded', () => {
       i++;
       if(i>=line.length){
         clearInterval(tick);
-        el.appendChild(document.createTextNode('\n'));
+        const newline = document.createElement('span');
+        newline.className = 'terminal-break';
+        newline.dataset.channel = TERMINAL_CHANNEL_GLOBAL;
+        newline.textContent = '\n';
+        el.appendChild(newline);
+        applyTerminalFilterToLine(newline);
         scrollTerminalToBottom();
         setTimeout(()=>typeLines(el, idx+1), 300);
       }
@@ -988,6 +1159,32 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const piGrid = document.querySelector('.pi-grid');
+  const activatePiFromCard = card => {
+    if(!card) return;
+    const piId = card.dataset.pi;
+    if(!piId) return;
+    const labelEl = card.querySelector('.pi-label');
+    const label = labelEl ? labelEl.textContent.trim() : piId;
+    selectPiCard(card, piId, label);
+  };
+
+  if(piGrid){
+    piGrid.addEventListener('click', ev => {
+      const card = ev.target.closest('.pi-card');
+      if(!card) return;
+      ev.preventDefault();
+      activatePiFromCard(card);
+    });
+    piGrid.addEventListener('keydown', ev => {
+      if(ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      const card = ev.target.closest('.pi-card');
+      if(!card) return;
+      ev.preventDefault();
+      activatePiFromCard(card);
+    });
+  }
+
   function setupSocket(){
     if(!socket){
       appendLog('Socket.IO client unavailable; realtime features disabled.');
@@ -1009,6 +1206,57 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('stats_snapshot', handleStatsSnapshot);
     socket.on('task_catalog', handleTaskCatalog);
 
+    socket.on('pi_console', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || 'unknown';
+      const line = payload.line || '';
+      if(!line) return;
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(line, { className: 'pi-console-line', channel });
+    });
+
+    socket.on('terminal_started', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || 'unknown';
+      const requestId = payload.request_id;
+      if(requestId){ pendingTerminal.set(requestId, { piId }); }
+      const command = payload.command ? `: ${payload.command}` : '';
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(`[terminal] ${piId} started${command}`, { channel, className: 'terminal-banner' });
+    });
+
+    socket.on('terminal_output', payload => {
+      if(!payload || !payload.line) return;
+      const piId = payload.pi_id || 'unknown';
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(payload.line, { channel });
+    });
+
+    socket.on('terminal_finished', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || 'unknown';
+      const channel = channelForPi(piId);
+      const requestId = payload.request_id;
+      if(requestId) pendingTerminal.delete(requestId);
+      const exitCode = payload.exit_code;
+      const ok = exitCode === 0 || exitCode === null || exitCode === undefined;
+      const message = ok ? 'completed successfully' : `exited with code ${exitCode}`;
+      writeTerminalLine(`[terminal] ${piId} ${message}`, { channel, className: 'terminal-banner' });
+    });
+
+    socket.on('terminal_error', payload => {
+      if(!payload) return;
+      const piId = payload.pi_id || 'unknown';
+      const channel = channelForPi(piId);
+      const requestId = payload.request_id;
+      if(requestId) pendingTerminal.delete(requestId);
+      const err = payload.error || 'Unknown error';
+      writeTerminalLine(`[terminal] ${piId} failed: ${err}`, { channel, className: 'terminal-banner' });
+    });
+
     socket.on('log', payload => {
       if(payload && payload.message){
         appendLog(payload.message);
@@ -1019,15 +1267,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!payload) return;
       const label = resolveTaskLabel(payload);
       const piId = payload.pi_id || 'local';
+      const channel = channelForPi(piId);
       if(payload.request_id){
         pendingTasks.set(payload.request_id, { taskId: payload.task_id, piId });
       }
-      writeTerminalLine(`[task] ${label} started on ${piId}.`);
+      removeEmptyBanner(channel);
+      writeTerminalLine(`[task] ${label} started on ${piId}.`, { channel });
     });
 
     socket.on('task_output', payload => {
       if(!payload || !payload.line) return;
-      writeTerminalLine(payload.line, { className: 'task-output' });
+      const piId = payload.pi_id || (payload.request_id && pendingTasks.get(payload.request_id)?.piId) || 'local';
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(payload.line, { className: 'task-output', channel });
     });
 
     socket.on('task_finished', payload => {
@@ -1038,7 +1291,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const exitCode = payload.exit_code;
       const ok = exitCode === 0 || exitCode === null || exitCode === undefined;
       const message = ok ? 'completed successfully' : `exited with code ${exitCode}`;
-      writeTerminalLine(`[task] ${label} on ${piId} ${message}.`);
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(`[task] ${label} on ${piId} ${message}.`, { channel });
     });
 
     socket.on('task_error', payload => {
@@ -1047,7 +1302,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if(payload.request_id) pendingTasks.delete(payload.request_id);
       const label = resolveTaskLabel(payload);
       const msg = payload.error || 'Unknown error';
-      writeTerminalLine(`[task] ${label} on ${piId} failed: ${msg}`);
+      const channel = channelForPi(piId);
+      removeEmptyBanner(channel);
+      writeTerminalLine(`[task] ${label} on ${piId} failed: ${msg}`, { channel });
     });
   }
 
@@ -1131,6 +1388,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }, {passive:false});
     }
   }catch(err){ console.warn('app.js: numpad init failed', err); }
+
+  try{
+    const symbolPadEl = document.getElementById('symbol-pad');
+    if(symbolPadEl){
+      symbolPadEl.addEventListener('click', (ev)=>{
+        const btn = ev.target.closest ? ev.target.closest('.sym-btn') : null;
+        if(!btn) return;
+        ev.preventDefault();
+        if(!cmdInput) return;
+        const key = btn.dataset.key || '';
+        cmdInput.value = cmdInput.value + key;
+        safeFocus();
+      }, {passive:false});
+    }
+  }catch(err){ console.warn('app.js: symbol pad init failed', err); }
 
   // QWERTY on-screen keyboard handling
   try{

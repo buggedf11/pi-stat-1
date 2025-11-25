@@ -69,6 +69,13 @@ class PiAgent:
                 return
             self._handle_execute_task(payload)
 
+        @_self_event(self._sio, "execute_terminal")
+        def _execute_terminal(payload: dict) -> None:
+            if self.register_only:
+                self.logger.info("Ignoring terminal command because agent is in register-only mode")
+                return
+            self._handle_terminal_command(payload)
+
     def _emit_register(self) -> None:
         vm_info = psutil.virtual_memory()
         payload = {
@@ -95,6 +102,28 @@ class PiAgent:
         worker = threading.Thread(
             target=self._run_task,
             args=(request_id, task_id or label, label, cmd_list),
+            daemon=True,
+        )
+        worker.start()
+
+    def _handle_terminal_command(self, payload: dict) -> None:
+        request_id = (payload or {}).get("request_id")
+        raw_command = (payload or {}).get("command")
+        if not request_id:
+            self.logger.error("Terminal command missing request_id: %s", payload)
+            return
+        if not raw_command or not isinstance(raw_command, (str, list, tuple)):
+            self.logger.error("Terminal command payload invalid: %s", payload)
+            self._emit_terminal_error(request_id, "Invalid command payload")
+            return
+        if isinstance(raw_command, (list, tuple)):
+            command_str = " ".join(str(part) for part in raw_command)
+        else:
+            command_str = str(raw_command)
+        self.logger.info("Executing terminal command %s: %s", request_id, command_str)
+        worker = threading.Thread(
+            target=self._run_terminal_command,
+            args=(request_id, command_str),
             daemon=True,
         )
         worker.start()
@@ -167,6 +196,75 @@ class PiAgent:
             {
                 "request_id": request_id,
                 "task_id": task_id,
+                "pi_id": self.pi_id,
+                "error": message,
+                "exit_code": exit_code,
+            },
+            namespace=PI_NAMESPACE,
+        )
+
+    def _run_terminal_command(self, request_id: str, command: str) -> None:
+        self._sio.emit(
+            "terminal_started",
+            {"request_id": request_id, "pi_id": self.pi_id, "command": command},
+            namespace=PI_NAMESPACE,
+        )
+        exit_code: Optional[int] = None
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                shell=True,
+            )
+        except FileNotFoundError:
+            exit_code = -1
+            self.logger.exception("Terminal executable not found for %s", request_id)
+            self._emit_terminal_error(request_id, "Executable not found", exit_code)
+            return
+        except Exception as exc:  # pragma: no cover - safety
+            exit_code = -1
+            self.logger.exception("Failed to start terminal command %s", request_id)
+            self._emit_terminal_error(request_id, str(exc), exit_code)
+            return
+
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                cleaned = line.rstrip("\n")
+                if cleaned:
+                    self._sio.emit(
+                        "terminal_output",
+                        {
+                            "request_id": request_id,
+                            "pi_id": self.pi_id,
+                            "line": cleaned,
+                        },
+                        namespace=PI_NAMESPACE,
+                    )
+            exit_code = process.wait()
+        except Exception as exc:  # pragma: no cover - runtime safeguard
+            exit_code = -1
+            self.logger.exception("Terminal command %s encountered runtime error", request_id)
+            self._emit_terminal_error(request_id, str(exc), exit_code)
+        else:
+            self._sio.emit(
+                "terminal_finished",
+                {
+                    "request_id": request_id,
+                    "pi_id": self.pi_id,
+                    "exit_code": exit_code,
+                },
+                namespace=PI_NAMESPACE,
+            )
+
+    def _emit_terminal_error(self, request_id: str, message: str, exit_code: int = -1) -> None:
+        self._sio.emit(
+            "terminal_error",
+            {
+                "request_id": request_id,
                 "pi_id": self.pi_id,
                 "error": message,
                 "exit_code": exit_code,

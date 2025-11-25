@@ -4,6 +4,7 @@ import json
 import subprocess
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Dict, List, Optional, Tuple
@@ -469,6 +470,9 @@ pi_sessions_lock = Lock()
 remote_requests: Dict[str, str] = {}
 remote_meta: Dict[str, Dict[str, Any]] = {}
 remote_lock = Lock()
+terminal_requests: Dict[str, str] = {}
+terminal_meta: Dict[str, Dict[str, Any]] = {}
+terminal_lock = Lock()
 
 
 def safe_command_preview(command: List[str]) -> str:
@@ -495,6 +499,47 @@ def broadcast_snapshot(target_sid: Optional[str] = None) -> None:
         socketio.emit("stats_snapshot", payload, room=target_sid, namespace="/ui")
     else:
         socketio.emit("stats_snapshot", payload, namespace="/ui")
+
+
+def emit_pi_console(pi_id: str, message: str, *, level: str = "INFO", event: Optional[str] = None) -> None:
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    payload: Dict[str, Any] = {
+        "pi_id": pi_id,
+        "line": f"{timestamp} {level} {message}",
+    }
+    if event:
+        payload["event"] = event
+    socketio.emit("pi_console", payload, namespace="/ui")
+
+
+def relay_terminal_to_ui(event_name: str, payload: Dict[str, Any]) -> None:
+    request_id = payload.get("request_id")
+    if not request_id:
+        return
+    with terminal_lock:
+        origin_sid = terminal_requests.get(request_id)
+        meta = terminal_meta.get(request_id, {})
+        if event_name in {"terminal_finished", "terminal_error"}:
+            terminal_requests.pop(request_id, None)
+            terminal_meta.pop(request_id, None)
+    if not origin_sid:
+        return
+
+    forward: Dict[str, Any] = {
+        "request_id": request_id,
+        "pi_id": payload.get("pi_id") or meta.get("pi_id") or "unknown",
+    }
+    if event_name == "terminal_started":
+        forward["command"] = payload.get("command")
+    if event_name == "terminal_output":
+        forward["line"] = payload.get("line", "")
+    if event_name == "terminal_finished":
+        forward["exit_code"] = payload.get("exit_code")
+    if event_name == "terminal_error":
+        forward["error"] = payload.get("error", "")
+        forward["exit_code"] = payload.get("exit_code")
+
+    socketio.emit(event_name, forward, room=origin_sid, namespace="/ui")
 
 
 def collect_local_stats() -> Dict[str, Any]:
@@ -651,6 +696,45 @@ def ui_run_task(payload: Dict[str, Any]) -> Dict[str, Any]:  # pragma: no cover 
     }
 
 
+@socketio.on("terminal_command", namespace="/ui")
+def ui_terminal_command(payload: Dict[str, Any]) -> Dict[str, Any]:  # pragma: no cover - event hook
+    if not isinstance(payload, dict):
+        return {"error": "Invalid payload."}
+    pi_id = str(payload.get("pi_id") or "").strip()
+    command = payload.get("command")
+    if not pi_id:
+        return {"error": "Pi id required."}
+    if not command:
+        return {"error": "Command required."}
+
+    with pi_sessions_lock:
+        target_sid = pi_sessions.get(pi_id)
+    if not target_sid:
+        return {"error": f"Pi '{pi_id}' is offline."}
+
+    request_id = str(uuid.uuid4())
+    with terminal_lock:
+        terminal_requests[request_id] = request.sid
+        terminal_meta[request_id] = {"pi_id": pi_id}
+
+    socketio.emit(
+        "execute_terminal",
+        {
+            "request_id": request_id,
+            "command": command,
+        },
+        to=target_sid,
+        namespace="/pi",
+    )
+
+    emit_pi_console(pi_id, f"Forwarded terminal command '{command}'", level="DEBUG", event="terminal_command")
+    return {
+        "status": "forwarded",
+        "request_id": request_id,
+        "message": f"Command forwarded to {pi_id}.",
+    }
+
+
 @socketio.on("assign_task", namespace="/ui")
 def ui_assign_task(payload: Dict[str, Any]) -> Dict[str, Any]:  # pragma: no cover - event hook
     if not isinstance(payload, dict):
@@ -775,6 +859,7 @@ def pi_stats_report(payload: Dict[str, Any]) -> None:  # pragma: no cover - even
         },
     )
     broadcast_snapshot()
+    emit_pi_console(pi_id, 'Emitting event "stats_report" [/pi]', event="stats_report")
 
 
 @socketio.on("task_started", namespace="/pi")
@@ -795,6 +880,26 @@ def pi_task_finished(payload: Dict[str, Any]) -> None:  # pragma: no cover - eve
 @socketio.on("task_error", namespace="/pi")
 def pi_task_error(payload: Dict[str, Any]) -> None:  # pragma: no cover - event hook
     relay_to_ui("task_error", payload)
+
+
+@socketio.on("terminal_started", namespace="/pi")
+def pi_terminal_started(payload: Dict[str, Any]) -> None:  # pragma: no cover - event hook
+    relay_terminal_to_ui("terminal_started", payload)
+
+
+@socketio.on("terminal_output", namespace="/pi")
+def pi_terminal_output(payload: Dict[str, Any]) -> None:  # pragma: no cover - event hook
+    relay_terminal_to_ui("terminal_output", payload)
+
+
+@socketio.on("terminal_finished", namespace="/pi")
+def pi_terminal_finished(payload: Dict[str, Any]) -> None:  # pragma: no cover - event hook
+    relay_terminal_to_ui("terminal_finished", payload)
+
+
+@socketio.on("terminal_error", namespace="/pi")
+def pi_terminal_error(payload: Dict[str, Any]) -> None:  # pragma: no cover - event hook
+    relay_terminal_to_ui("terminal_error", payload)
 
 
 @socketio.on("disconnect", namespace="/pi")

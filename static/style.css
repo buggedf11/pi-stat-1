@@ -47,7 +47,10 @@ body{
 .terminal-output{display:block;min-height:100%;height:auto;white-space:pre-wrap;overflow:visible;background:transparent;border:none;color:var(--accent);font-size:14px;line-height:1.5;padding-right:6px}
 
 .pi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}
-.pi-card{background:linear-gradient(180deg, rgba(0,0,0,0.02), rgba(0,0,0,0.05));padding:18px;border-radius:10px;border:1px solid rgba(57,255,20,0.06);box-shadow:var(--glow);display:flex;flex-direction:column;gap:16px;min-height:180px}
+.pi-card{background:linear-gradient(180deg, rgba(0,0,0,0.02), rgba(0,0,0,0.05));padding:18px;border-radius:10px;border:1px solid rgba(57,255,20,0.06);box-shadow:var(--glow);display:flex;flex-direction:column;gap:16px;min-height:180px;cursor:pointer;transition:transform .18s cubic-bezier(.2,.9,.25,1), border-color .2s ease, box-shadow .2s ease}
+.pi-card:focus-visible{outline:2px solid rgba(57,255,20,0.25);outline-offset:4px}
+.pi-card.selected{border-color:rgba(57,255,20,0.2);box-shadow:0 0 32px rgba(57,255,20,0.16), inset 0 0 18px rgba(57,255,20,0.08);transform:translateY(-2px)}
+.pi-card.selected .pi-label{color:var(--accent2)}
 .pi-card[data-online="0"]{opacity:0.45;filter:saturate(0.4)}
 .pi-card[data-online="0"] .pi-label{color:rgba(99,179,107,0.5)}
 .pi-header{display:flex;flex-direction:column;gap:4px}
@@ -116,8 +119,12 @@ body{
 @keyframes flicker{0%{opacity:1}50%{opacity:.92}100%{opacity:1}}
 @keyframes caret{50%{border-right-color: transparent}}
 
+.terminal-output .terminal-banner{display:block;color:var(--muted);font-style:italic}
+.terminal-output .terminal-banner--empty{opacity:0.7}
+.terminal-output .pi-console-line{color:var(--accent2)}
 .terminal-output span.caret{display:inline-block;border-right:2px solid var(--accent);animation:caret .9s steps(1) infinite}
 .terminal-output span.task-output{display:block;color:var(--accent2)}
+.terminal-break{display:block;height:0;line-height:0}
 
 /* Responsive */
 @media (max-width:1200px){
@@ -161,6 +168,51 @@ body{
     .numpad .num-btn{padding:12px;font-size:16px}
 }
 
+.symbol-pad{
+	position:relative;
+	margin-top:12px;
+	display:grid;
+	grid-template-columns:repeat(4, 1fr);
+	gap:10px;
+	width:300px;
+	padding:12px;
+	background:rgba(0,0,0,0.18);
+	border:1px solid rgba(57,255,20,0.06);
+	border-radius:8px;
+	z-index:995;
+}
+.symbol-pad .sym-btn{
+	padding:14px 8px;
+	background:transparent;
+	border:1px solid rgba(57,255,20,0.04);
+	color:var(--accent);
+	font-weight:900;
+	font-size:18px;
+	border-radius:8px;
+	touch-action:manipulation;
+	cursor:pointer;
+}
+.symbol-pad .sym-btn:active{
+	background:rgba(57,255,20,0.02);
+	transform:translateY(1px);
+}
+
+@media (max-width:900px){
+	.symbol-pad{
+		position:fixed;
+		left:8px;
+		top:330px;
+		width:180px;
+		grid-template-columns:repeat(3,1fr);
+		gap:8px;
+		padding:10px;
+	}
+	.symbol-pad .sym-btn{
+		padding:12px;
+		font-size:16px;
+	}
+}
+
 /* QWERTY keyboard */
 
 .qwerty{
@@ -189,7 +241,8 @@ body{
 
 /* Staged fullscreen choreography */
 .screen.terminal-fullscreen.fs-stage-keyboard .qwerty{transform:translateY(120%);opacity:0;pointer-events:none}
-.screen.terminal-fullscreen.fs-stage-numpad #numpad{transform:translateX(-120%);opacity:0;pointer-events:none}
+.screen.terminal-fullscreen.fs-stage-numpad #numpad,
+.screen.terminal-fullscreen.fs-stage-numpad #symbol-pad{transform:translateX(-120%);opacity:0;pointer-events:none}
 .screen.terminal-fullscreen .terminal-frame{background:var(--panel);color:var(--accent);box-shadow:0 0 18px rgba(57,255,20,0.10), inset 0 0 12px rgba(57,255,20,0.03);border:2px solid var(--accent);overflow:hidden}
 
 /* hide command panel while fullscreen */
