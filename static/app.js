@@ -56,13 +56,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!numpad || !terminalFrame || !panelsEl) return;
       if(numpad.classList.contains('hidden')) return;
       const style = window.getComputedStyle(numpad);
-      // Respect small-screen fallback where numpad is fixed
-      // if fixed, we'll still adjust terminal size but skip horizontal alignment
-      const isFixed = style.position === 'fixed';
+      // Only attempt to set `top` when the numpad is a positioned element
+      // (absolute/relative/sticky). If it's static/non-positioned we skip top.
+      const posType = style.position;
       const termRect = terminalFrame.getBoundingClientRect();
       const panelsRect = panelsEl.getBoundingClientRect();
       const top = Math.max(0, Math.round(termRect.top - panelsRect.top));
-      if(!isFixed){
+      if(posType === 'absolute' || posType === 'fixed' || posType === 'sticky'){
         numpad.style.top = top + 'px';
       }
       // adjust terminal height so numpad fits on small screens
@@ -91,8 +91,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // panels have bottom padding/space for boot bar — mirror CSS value (80)
       const panelsBottomSpace = 80;
-      // compute available space for terminal-inner, clamp to sensible min/max
-      const available = Math.max(140, vh - reserved - numpadH - panelsBottomSpace - 24);
+      // compute available space for terminal-inner.
+      // Raise the minimum so the terminal shows ~15 lines (~14px font, 1.5 line-height => ~21px/line => ~315px).
+      // Add padding/borders margin so choose ~340px as a comfortable floor for 15 lines.
+      const MIN_TERMINAL_PX = 340;
+      const available = Math.max(MIN_TERMINAL_PX, vh - reserved - numpadH - panelsBottomSpace - 24);
       terminalInner.style.height = available + 'px';
     }catch(err){ console.warn('app.js: adjustTerminalForNumpad failed', err); }
   }
@@ -899,7 +902,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if(buttons.length===0) console.warn('app.js: no .boot-btn elements found');
   buttons.forEach(b=>{
-    b.addEventListener('click', (ev)=>{ 
+    b.addEventListener('click', (ev)=>{
+      // ignore the fullscreen control (it has its own handler)
+      if(b.id === 'term-fullscreen' || b.classList.contains('term-fullscreen-btn')){
+        return;
+      }
       const t = b.dataset.target;
       console.log('app.js: button click ->', t);
       showTab(t);
@@ -1065,34 +1072,63 @@ document.addEventListener('DOMContentLoaded', () => {
       appendPrompt(rawValue);
       executeCommand(rawValue);
       cmdInput.value = '';
-      cmdInput.focus();
+      // focus only if native on-screen keyboard is allowed
+      safeFocus();
     });
   }
 
-  // Numpad for touchscreens: append numbers, dot, backspace, and submit
+  // Helper to focus input only when we do not intend to suppress the native on-screen keyboard
+  function safeFocus(){
+    try{
+      if(!cmdInput) return;
+      // if the input is marked to disable OSK (readonly + data-disable-osk), avoid focusing
+      const disable = cmdInput.hasAttribute('readonly') || cmdInput.dataset.disableOsk === 'true' || cmdInput.getAttribute('readonly') !== null;
+      if(disable) return;
+      cmdInput.focus();
+    }catch(err){ /* no-op */ }
+  }
+
+  // If input is readonly and intended to use on-page keyboard, intercept touch/click so native OSK isn't triggered
   try{
-    const numButtons = document.querySelectorAll('.num-btn');
-    if(numButtons.length){
-      numButtons.forEach(b=>{
-        b.addEventListener('click', ()=>{
-          const key = b.dataset.key;
-          if(!cmdInput) return;
-          if(key === 'back'){
-            // remove last char
-            cmdInput.value = cmdInput.value.slice(0,-1);
-            cmdInput.focus();
-            return;
-          }
-          if(key === 'enter'){
-            // submit
-            if(cmdForm) cmdForm.requestSubmit ? cmdForm.requestSubmit() : cmdForm.dispatchEvent(new Event('submit',{cancelable:true, bubbles:true}));
-            return;
-          }
-          // append digit or dot
-          cmdInput.value = cmdInput.value + key;
-          cmdInput.focus();
-        });
-      });
+    if(cmdInput && (cmdInput.hasAttribute('readonly') || cmdInput.dataset.disableOsk === 'true')){
+      const qwertyEl = document.getElementById('qwerty');
+      const openKeyboard = (ev)=>{
+        // prevent the native keyboard from opening on touch devices
+        ev.preventDefault();
+        // optionally, signal visually that the on-screen keyboard should be used
+        if(qwertyEl) qwertyEl.classList.add('kbd-open');
+        // ensure the form submit button remains reachable for accessibility
+        cmdInput.setAttribute('aria-expanded','true');
+      };
+      cmdInput.addEventListener('touchstart', openKeyboard, {passive:false});
+      cmdInput.addEventListener('mousedown', (e)=>{ e.preventDefault(); openKeyboard(e); });
+    }
+  }catch(err){ console.warn('app.js: safeFocus/init touch interception failed', err); }
+
+  // HUD removed — terminal sizing already guards for missing .hud element
+
+  // Numpad for touchscreens: delegated handler on the #numpad container
+  try{
+    const numpadEl = document.getElementById('numpad');
+    if(numpadEl){
+      numpadEl.addEventListener('click', (ev)=>{
+        const btn = ev.target.closest ? ev.target.closest('.num-btn') : null;
+        if(!btn) return;
+        ev.preventDefault();
+        const key = btn.dataset.key;
+        if(!cmdInput) return;
+        if(key === 'back'){
+          cmdInput.value = cmdInput.value.slice(0,-1);
+          safeFocus();
+          return;
+        }
+        if(key === 'enter'){
+          if(cmdForm) cmdForm.requestSubmit ? cmdForm.requestSubmit() : cmdForm.dispatchEvent(new Event('submit',{cancelable:true, bubbles:true}));
+          return;
+        }
+        cmdInput.value = cmdInput.value + (key || '');
+        safeFocus();
+      }, {passive:false});
     }
   }catch(err){ console.warn('app.js: numpad init failed', err); }
 
@@ -1105,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!cmdInput) return;
       if(shiftOn){ ch = ch.toUpperCase(); }
       cmdInput.value = cmdInput.value + ch;
-      cmdInput.focus();
+      safeFocus();
       // if shift is single-use, turn off after one key (optional). We'll keep as a toggle.
     }
     keyButtons.forEach(k=>{
@@ -1114,7 +1150,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if(!cmdInput) return;
         if(key === 'back'){
           cmdInput.value = cmdInput.value.slice(0,-1);
-          cmdInput.focus();
+          safeFocus();
           return;
         }
         if(key === 'enter'){
@@ -1123,7 +1159,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if(key === 'space'){
           cmdInput.value = cmdInput.value + ' ';
-          cmdInput.focus();
+          safeFocus();
           return;
         }
         if(key === 'shift'){
@@ -1178,6 +1214,290 @@ document.addEventListener('DOMContentLoaded', () => {
       termInner.addEventListener('pointerleave', stopDrag);
     }
   }catch(err){ console.warn('app.js: drag-to-scroll setup failed', err); }
+
+  // Terminal fullscreen toggle: staged animation with smooth frame morphing
+  try{
+    const screenEl = document.querySelector('.screen');
+    const termBtn = document.getElementById('term-fullscreen');
+    const terminalInner = document.querySelector('.terminal-inner');
+    const fullscreenTimers = [];
+    const STAGE_DELAY = 240; // ms gap between animation stages for a choreographed sequence
+    const STAGE_CLASSES = ['fs-stage-horizontal','fs-stage-numpad','fs-stage-vertical','fs-stage-keyboard'];
+    const FS_EASE = 'cubic-bezier(.2,.9,.25,1)';
+    const fullscreenState = {
+      savedFrameStyle: '',
+      savedRect: null,
+      savedMetrics: null,
+      savedInnerStyle: null,
+      savedInnerHeight: null,
+      placeholder: null,
+      active: false
+    };
+
+    const clearFullscreenTimers = ()=>{
+      while(fullscreenTimers.length){
+        clearTimeout(fullscreenTimers.pop());
+      }
+    };
+
+    const removeStageClasses = ()=>{
+      if(!screenEl) return;
+      STAGE_CLASSES.forEach(cls => screenEl.classList.remove(cls));
+    };
+
+    const queueStage = (callback, delay)=>{
+      const id = window.setTimeout(callback, delay);
+      fullscreenTimers.push(id);
+    };
+
+    const getTermFrame = ()=>document.querySelector('.terminal-frame');
+
+    const prepareTerminalInner = ()=>{
+      if(!terminalInner) return;
+      fullscreenState.savedInnerStyle = {
+        transition: terminalInner.style.transition,
+        height: terminalInner.style.height
+      };
+      const innerRect = terminalInner.getBoundingClientRect();
+      fullscreenState.savedInnerHeight = innerRect ? innerRect.height : null;
+      terminalInner.style.transition = `height .6s ${FS_EASE}`;
+      if(innerRect && innerRect.height){
+        terminalInner.style.height = `${innerRect.height}px`;
+      }
+    };
+
+    const restoreTerminalInner = ()=>{
+      if(!terminalInner) return;
+      if(fullscreenState.savedInnerStyle){
+        terminalInner.style.transition = fullscreenState.savedInnerStyle.transition || '';
+        terminalInner.style.height = fullscreenState.savedInnerStyle.height || '';
+      }else{
+        terminalInner.style.transition = '';
+        terminalInner.style.height = '';
+      }
+      fullscreenState.savedInnerStyle = null;
+      fullscreenState.savedInnerHeight = null;
+    };
+
+    const applyFullscreenInnerHeight = ()=>{
+      if(!terminalInner) return;
+      const bootBar = document.querySelector('.boot-bar');
+      const bootH = bootBar ? Math.ceil(bootBar.getBoundingClientRect().height) : 64;
+      const topGutter = 5;
+      const bottomGutter = 5;
+      const available = Math.max(200, window.innerHeight - topGutter - bottomGutter - bootH);
+      terminalInner.style.height = available + 'px';
+    };
+
+    const prepareTerminalFrame = ()=>{
+      const termFrame = getTermFrame();
+      if(!termFrame) return null;
+      const rect = termFrame.getBoundingClientRect();
+      const computed = window.getComputedStyle(termFrame);
+      const widthPx = parseFloat(computed.width) || rect.width;
+      const heightPx = parseFloat(computed.height) || rect.height;
+      fullscreenState.savedRect = rect;
+      fullscreenState.savedFrameStyle = termFrame.getAttribute('style') || '';
+      fullscreenState.savedMetrics = {
+        width: widthPx,
+        height: heightPx,
+        top: rect.top,
+        left: rect.left
+      };
+      const placeholder = document.createElement('div');
+      placeholder.style.display = computed.display === 'inline' ? 'inline-block' : (computed.display || 'block');
+      placeholder.style.width = computed.width;
+      placeholder.style.height = `${heightPx}px`;
+      placeholder.style.marginTop = computed.marginTop;
+      placeholder.style.marginRight = computed.marginRight;
+      placeholder.style.marginBottom = computed.marginBottom;
+      placeholder.style.marginLeft = computed.marginLeft;
+      placeholder.style.visibility = 'hidden';
+      placeholder.style.pointerEvents = 'none';
+      if(termFrame.parentNode){
+        termFrame.parentNode.insertBefore(placeholder, termFrame);
+        fullscreenState.placeholder = placeholder;
+      }
+      termFrame.style.transition = `top .6s ${FS_EASE}, left .6s ${FS_EASE}, width .6s ${FS_EASE}, height .6s ${FS_EASE}`;
+      termFrame.style.position = 'fixed';
+      termFrame.style.top = `${rect.top}px`;
+      termFrame.style.left = `${rect.left}px`;
+      termFrame.style.width = `${widthPx}px`;
+      termFrame.style.height = `${heightPx}px`;
+      termFrame.style.right = 'auto';
+      termFrame.style.bottom = 'auto';
+      termFrame.style.margin = '0';
+      termFrame.style.zIndex = '1110';
+      termFrame.style.maxWidth = 'none';
+      termFrame.style.minWidth = '0';
+      termFrame.style.boxSizing = computed.boxSizing || 'border-box';
+      return termFrame;
+    };
+
+    const animateFrameVertical = termFrame => {
+      if(!termFrame) return;
+      const bootBar = document.querySelector('.boot-bar');
+      const bootH = bootBar ? Math.ceil(bootBar.getBoundingClientRect().height) : 64;
+      const topGutter = 5;
+      const bottomGutter = 5;
+      const targetHeight = Math.max(220, window.innerHeight - topGutter - bottomGutter - bootH);
+      termFrame.style.top = `${topGutter}px`;
+      termFrame.style.height = `${targetHeight}px`;
+    };
+
+    const animateFrameHorizontal = termFrame => {
+      if(!termFrame) return;
+      const sideGutter = 5;
+      const targetWidth = Math.max(320, window.innerWidth - sideGutter * 2);
+      termFrame.style.left = `${sideGutter}px`;
+      termFrame.style.width = `${targetWidth}px`;
+    };
+
+    const restoreTerminalFrame = ()=>{
+      const termFrame = getTermFrame();
+      if(!termFrame) return;
+      if(fullscreenState.savedFrameStyle){
+        termFrame.setAttribute('style', fullscreenState.savedFrameStyle);
+      }else{
+        termFrame.removeAttribute('style');
+      }
+      fullscreenState.savedFrameStyle = '';
+      fullscreenState.savedRect = null;
+      fullscreenState.savedMetrics = null;
+      if(fullscreenState.placeholder && fullscreenState.placeholder.parentNode){
+        fullscreenState.placeholder.parentNode.removeChild(fullscreenState.placeholder);
+      }
+      fullscreenState.placeholder = null;
+    };
+
+    function enterFullscreen(){
+      if(!screenEl) return;
+      clearFullscreenTimers();
+      removeStageClasses();
+      const termFrame = prepareTerminalFrame();
+      if(!termFrame) return;
+      prepareTerminalInner();
+      screenEl.classList.add('terminal-fullscreen');
+      screenEl.classList.add('fs-stage-keyboard');
+      if(termBtn){
+        termBtn.setAttribute('aria-pressed','true');
+        termBtn.setAttribute('aria-label','Exit fullscreen');
+        termBtn.textContent = '⤡';
+      }
+
+      queueStage(()=>{
+        screenEl.classList.add('fs-stage-vertical');
+        animateFrameVertical(termFrame);
+        applyFullscreenInnerHeight();
+      }, STAGE_DELAY);
+
+      queueStage(()=>{
+        screenEl.classList.add('fs-stage-numpad');
+      }, STAGE_DELAY * 2);
+
+      queueStage(()=>{
+        screenEl.classList.add('fs-stage-horizontal');
+        animateFrameHorizontal(termFrame);
+        window.setTimeout(()=>{
+          try{ alignNumpad(); }catch(err){}
+        }, 60);
+      }, STAGE_DELAY * 3);
+
+      fullscreenState.active = true;
+    }
+
+    function exitFullscreen(){
+      if(!screenEl) return;
+      clearFullscreenTimers();
+      const termFrame = getTermFrame();
+      if(termBtn){
+        termBtn.setAttribute('aria-pressed','false');
+        termBtn.setAttribute('aria-label','Enter fullscreen');
+        termBtn.textContent = '⤢';
+      }
+
+      if(!termFrame){
+        removeStageClasses();
+        screenEl.classList.remove('terminal-fullscreen');
+        restoreTerminalInner();
+        fullscreenState.active = false;
+        try{
+          adjustTerminalForNumpad();
+          alignNumpad();
+        }catch(err){}
+        return;
+      }
+
+      queueStage(()=>{
+        screenEl.classList.remove('fs-stage-horizontal');
+        const saved = fullscreenState.savedMetrics;
+        if(saved){
+          termFrame.style.left = `${saved.left}px`;
+          termFrame.style.width = `${saved.width}px`;
+        }
+      }, 0);
+
+      queueStage(()=>{
+        screenEl.classList.remove('fs-stage-numpad');
+      }, STAGE_DELAY);
+
+      queueStage(()=>{
+        screenEl.classList.remove('fs-stage-vertical');
+        const saved = fullscreenState.savedMetrics;
+        if(saved){
+          termFrame.style.top = `${saved.top}px`;
+          termFrame.style.height = `${saved.height}px`;
+        }
+        if(terminalInner){
+          if(fullscreenState.savedInnerHeight !== null){
+            terminalInner.style.height = `${fullscreenState.savedInnerHeight}px`;
+          }else{
+            terminalInner.style.height = '';
+          }
+        }
+      }, STAGE_DELAY * 2);
+
+      queueStage(()=>{
+        screenEl.classList.remove('fs-stage-keyboard');
+        screenEl.classList.remove('terminal-fullscreen');
+        restoreTerminalInner();
+        window.setTimeout(()=>{
+          restoreTerminalFrame();
+          try{
+            adjustTerminalForNumpad();
+            alignNumpad();
+          }catch(err){}
+        }, 320);
+        fullscreenState.active = false;
+      }, STAGE_DELAY * 3);
+    }
+
+    if(termBtn){
+      termBtn.addEventListener('click', (ev)=>{
+        ev.preventDefault();
+        const isFs = screenEl && screenEl.classList.contains('terminal-fullscreen');
+        if(isFs) exitFullscreen(); else enterFullscreen();
+      });
+    }
+
+    window.addEventListener('resize', ()=>{
+      if(!screenEl || !screenEl.classList.contains('terminal-fullscreen')) return;
+      const termFrame = getTermFrame();
+      if(screenEl.classList.contains('fs-stage-vertical')){
+        animateFrameVertical(termFrame);
+        applyFullscreenInnerHeight();
+      }
+      if(screenEl.classList.contains('fs-stage-horizontal')){
+        animateFrameHorizontal(termFrame);
+      }
+    });
+
+    window.addEventListener('keydown', (e)=>{
+      if(e.key === 'Escape' && screenEl && screenEl.classList.contains('terminal-fullscreen')){
+        exitFullscreen();
+      }
+    });
+  }catch(err){ console.warn('app.js: fullscreen init failed', err); }
 
   // Periodic small updates
   if(!socket){

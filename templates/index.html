@@ -9,12 +9,6 @@
 </head>
 <body>
     <div class="screen">
-        <div class="hud">
-            <div class="title">
-                <div class="logo">PI</div>
-                <div class="title-text">Pi Stat</div>
-            </div>
-        </div>
 
         <main class="panels">
             <aside class="numpad" id="numpad" aria-label="numeric keypad">
@@ -45,7 +39,7 @@
 
                 <div class="command-panel">
                     <form id="cmd-form">
-                        <input id="cmd-input" class="cmd-input" type="text" placeholder="enter command e.g. status --all" autocomplete="off">
+                        <input id="cmd-input" class="cmd-input" type="text" placeholder="enter command e.g. status --all" autocomplete="off" readonly data-disable-osk="true" aria-haspopup="true">
                         <button id="cmd-run" class="cmd-run" type="submit">RUN</button>
                     </form>
                 </div>
@@ -110,6 +104,7 @@
             <button class="boot-btn active" data-target="terminal">TERMINAL</button>
             <button class="boot-btn" data-target="stats">STATS</button>
             <button class="boot-btn" data-target="logs">LOGS</button>
+            <button id="term-fullscreen" class="boot-btn term-fullscreen-btn" aria-pressed="false" aria-label="Enter fullscreen">⤢</button>
         </nav>
 
         <div class="scanline"></div>
