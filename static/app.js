@@ -43,6 +43,34 @@ document.addEventListener('DOMContentLoaded', () => {
     purple: { accent:'#c77dff', accent2:'#e0aaff', muted:'#b794f6', bg:'#140016', panel:'#1f0026' }
   };
 
+  function preferHardwareKeyboard(){
+    try{
+      const nav = navigator || {};
+      const ua = (nav.userAgent || '').toLowerCase();
+      if(/cros/.test(ua)) return false;
+      if(/android|iphone|ipad|ipod|mobile/.test(ua)) return false;
+      if(nav.userAgentData && typeof nav.userAgentData.mobile === 'boolean' && nav.userAgentData.mobile){
+        return false;
+      }
+      const maxTouch = typeof nav.maxTouchPoints === 'number'
+        ? nav.maxTouchPoints
+        : (nav.msMaxTouchPoints || 0);
+      if(maxTouch === 0) return true;
+      if(maxTouch > 0){
+        if(window.matchMedia){
+          const fine = window.matchMedia('(pointer: fine)').matches;
+          const coarse = window.matchMedia('(pointer: coarse)').matches;
+          if(fine && !coarse) return true;
+        }
+        return false;
+      }
+      return true;
+    }catch(err){
+      console.warn('app.js: preferHardwareKeyboard failed', err);
+      return true;
+    }
+  }
+
   function showTab(target){
     panels.forEach(p=>p.classList.toggle('active', p.id===target));
     buttons.forEach(b=>b.classList.toggle('active', b.dataset.target===target));
@@ -1321,6 +1349,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // Command panel behavior
   const cmdForm = document.getElementById('cmd-form');
   const cmdInput = document.getElementById('cmd-input');
+  const hardwareKeyboardPreferred = preferHardwareKeyboard();
+  if(cmdInput){
+    if(hardwareKeyboardPreferred){
+      cmdInput.removeAttribute('readonly');
+      cmdInput.readOnly = false;
+      cmdInput.dataset.disableOsk = 'false';
+      cmdInput.setAttribute('aria-haspopup', 'false');
+    }else{
+      cmdInput.setAttribute('readonly', '');
+      cmdInput.readOnly = true;
+      cmdInput.dataset.disableOsk = 'true';
+      cmdInput.setAttribute('aria-haspopup', 'true');
+    }
+  }
   if(cmdForm && cmdInput){
     cmdForm.addEventListener('submit', (ev)=>{
       ev.preventDefault();
@@ -1347,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // If input is readonly and intended to use on-page keyboard, intercept touch/click so native OSK isn't triggered
   try{
-    if(cmdInput && (cmdInput.hasAttribute('readonly') || cmdInput.dataset.disableOsk === 'true')){
+    if(cmdInput && cmdInput.dataset.disableOsk === 'true'){
       const qwertyEl = document.getElementById('qwerty');
       const openKeyboard = (ev)=>{
         // prevent the native keyboard from opening on touch devices
@@ -1566,15 +1608,19 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!termFrame) return null;
       const rect = termFrame.getBoundingClientRect();
       const computed = window.getComputedStyle(termFrame);
-      const widthPx = parseFloat(computed.width) || rect.width;
-      const heightPx = parseFloat(computed.height) || rect.height;
+      const startTop = rect.top;
+      const startLeft = rect.left;
+      const initialWidth = rect.width;
+      const initialHeight = rect.height;
+      const widthPx = parseFloat(computed.width) || initialWidth;
+      const heightPx = parseFloat(computed.height) || initialHeight;
       fullscreenState.savedRect = rect;
       fullscreenState.savedFrameStyle = termFrame.getAttribute('style') || '';
       fullscreenState.savedMetrics = {
+        top: startTop,
+        left: startLeft,
         width: widthPx,
-        height: heightPx,
-        top: rect.top,
-        left: rect.left
+        height: heightPx
       };
       const placeholder = document.createElement('div');
       placeholder.style.display = computed.display === 'inline' ? 'inline-block' : (computed.display || 'block');
@@ -1590,20 +1636,56 @@ document.addEventListener('DOMContentLoaded', () => {
         termFrame.parentNode.insertBefore(placeholder, termFrame);
         fullscreenState.placeholder = placeholder;
       }
-      termFrame.style.transition = `top .6s ${FS_EASE}, left .6s ${FS_EASE}, width .6s ${FS_EASE}, height .6s ${FS_EASE}`;
+
+      const computedTop = rect.top;
+      const computedLeft = rect.left;
+      const existingTransform = computed.transform;
+      const isIdentity = !existingTransform || existingTransform === 'none';
+
       termFrame.style.position = 'fixed';
-      termFrame.style.top = `${rect.top}px`;
-      termFrame.style.left = `${rect.left}px`;
-      termFrame.style.width = `${widthPx}px`;
-      termFrame.style.height = `${heightPx}px`;
+      termFrame.style.top = `${computedTop}px`;
+      termFrame.style.left = `${computedLeft}px`;
       termFrame.style.right = 'auto';
       termFrame.style.bottom = 'auto';
+      termFrame.style.width = `${initialWidth}px`;
+      termFrame.style.height = `${initialHeight}px`;
       termFrame.style.margin = '0';
       termFrame.style.zIndex = '1110';
       termFrame.style.maxWidth = 'none';
       termFrame.style.minWidth = '0';
       termFrame.style.boxSizing = computed.boxSizing || 'border-box';
+
+      if(!isIdentity){
+        const matrix = existingTransform.match(/matrix\(([^)]+)\)/);
+        if(matrix && matrix[1]){
+          const values = matrix[1].split(',').map(parseFloat);
+          if(values.length >= 6){
+            const translateX = values[4];
+            const translateY = values[5];
+            termFrame.style.transform = 'none';
+            termFrame.style.top = `${computedTop + translateY}px`;
+            termFrame.style.left = `${computedLeft + translateX}px`;
+            termFrame.style.right = 'auto';
+          }
+        }else{
+          termFrame.style.transform = 'none';
+        }
+      }
+
+      termFrame.style.transition = `top .6s ${FS_EASE}, left .6s ${FS_EASE}, width .6s ${FS_EASE}, height .6s ${FS_EASE}`;
+
       return termFrame;
+    };
+
+    const expandFrameWidth = termFrame => {
+      if(!termFrame) return;
+      const leftGutter = 10;
+      const rightGutter = 24;
+      const saved = fullscreenState.savedMetrics;
+      const baseLeft = saved ? saved.left : termFrame.getBoundingClientRect().left;
+      const targetWidth = Math.max(saved ? saved.width : 0, Math.max(320, window.innerWidth - leftGutter - rightGutter));
+      termFrame.style.left = `${baseLeft}px`;
+      termFrame.style.width = `${targetWidth}px`;
     };
 
     const animateFrameVertical = termFrame => {
@@ -1617,11 +1699,16 @@ document.addEventListener('DOMContentLoaded', () => {
       termFrame.style.height = `${targetHeight}px`;
     };
 
-    const animateFrameHorizontal = termFrame => {
+    const animateFrameHorizontal = (termFrame, { shiftOnly = false } = {}) => {
       if(!termFrame) return;
-      const sideGutter = 5;
-      const targetWidth = Math.max(320, window.innerWidth - sideGutter * 2);
-      termFrame.style.left = `${sideGutter}px`;
+      const leftGutter = 10;
+      const rightGutter = 24;
+      if(shiftOnly){
+        termFrame.style.left = `${leftGutter}px`;
+        return;
+      }
+      const targetWidth = Math.max(320, window.innerWidth - leftGutter - rightGutter);
+      termFrame.style.left = `${leftGutter}px`;
       termFrame.style.width = `${targetWidth}px`;
     };
 
@@ -1658,22 +1745,26 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       queueStage(()=>{
-        screenEl.classList.add('fs-stage-vertical');
-        animateFrameVertical(termFrame);
-        applyFullscreenInnerHeight();
+        screenEl.classList.add('fs-stage-horizontal');
+        expandFrameWidth(termFrame);
       }, STAGE_DELAY);
 
       queueStage(()=>{
-        screenEl.classList.add('fs-stage-numpad');
+        screenEl.classList.add('fs-stage-vertical');
+        animateFrameVertical(termFrame);
+        applyFullscreenInnerHeight();
       }, STAGE_DELAY * 2);
 
       queueStage(()=>{
-        screenEl.classList.add('fs-stage-horizontal');
-        animateFrameHorizontal(termFrame);
+        screenEl.classList.add('fs-stage-numpad');
+      }, STAGE_DELAY * 3);
+
+      queueStage(()=>{
+        animateFrameHorizontal(termFrame, { shiftOnly: true });
         window.setTimeout(()=>{
           try{ alignNumpad(); }catch(err){}
         }, 60);
-      }, STAGE_DELAY * 3);
+      }, STAGE_DELAY * 4);
 
       fullscreenState.active = true;
     }
@@ -1731,16 +1822,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
       queueStage(()=>{
         screenEl.classList.remove('fs-stage-keyboard');
-        screenEl.classList.remove('terminal-fullscreen');
         restoreTerminalInner();
         window.setTimeout(()=>{
           restoreTerminalFrame();
+          screenEl.classList.remove('terminal-fullscreen');
           try{
             adjustTerminalForNumpad();
             alignNumpad();
           }catch(err){}
-        }, 320);
-        fullscreenState.active = false;
+          fullscreenState.active = false;
+        }, 280);
       }, STAGE_DELAY * 3);
     }
 

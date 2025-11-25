@@ -2,22 +2,59 @@
 
 Simple dashboard for watching Raspberry Pi stats and running commands from a web page. The controller lives in `main.py` and serves the UI at port 8000.
 
-## Controller Quick Start
-1. `pip install -r requirements.txt` — get the Python packages.
-2. `python main.py` — start the Flask/Socket.IO server.
-3. Open `http://localhost:8000` (or replace `localhost` with your server IP).
+## Controller Quick Start (Windows or Linux)
+1. Install Python 3.10+ if you do not already have it.
+2. Create and activate a virtual environment (optional but recommended).
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate        # Linux / macOS
+   .\.venv\Scripts\activate        # Windows PowerShell
+   ```
+3. Install the controller dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. Launch the controller:
+   ```bash
+   python main.py
+   ```
+5. Open the dashboard at `http://localhost:8000` (swap `localhost` for your host IP if you are on a different machine).
 
 ## Connect a Raspberry Pi
-1. On the Pi run `pip install python-socketio[client] psutil` (or reuse the same `requirements.txt`).
-2. Start the agent:
+1. Update the Pi and ensure Python 3 is installed:
    ```bash
-   python pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
+   sudo apt update && sudo apt install -y python3 python3-pip
+   ```
+2. Install the Pi agent dependencies (reuse `requirements.txt` if you prefer):
+   ```bash
+   pip3 install python-socketio[client] psutil
+   ```
+3. Start the agent:
+   ```bash
+   python3 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
    ```
    - `<controller-ip>`: address where `main.py` is running.
    - `--pi-id`: choose any unique name for that Pi.
    - `--label` is optional; it controls the display name in the dashboard.
 
 The Pi now sends CPU/RAM updates and is ready to run commands you trigger from the web terminal.
+
+## Deploying the Agent on Windows
+1. Install Python 3.10+ from [python.org](https://www.python.org/downloads/). During setup, tick "Add Python to PATH".
+2. Open PowerShell in the repository folder and create a virtual environment (optional):
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate
+   ```
+3. Install dependencies:
+   ```powershell
+   pip install python-socketio[client] psutil
+   ```
+4. Run the agent, pointing it at your controller:
+   ```powershell
+   python pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id win-node --label "Windows"
+   ```
+   Leave this PowerShell window open so the agent can stream stats and terminal output.
 
 ## Web Terminal Commands
 - `task list` — show the safe, pre-built maintenance tasks.

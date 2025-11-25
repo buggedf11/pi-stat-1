@@ -66,9 +66,9 @@ body{
 	.terminal-frame{
 		/* Make terminal 70% of viewport width on larger screens (capped at 1200px) */
 		width: min(1200px, 70vw);
-	max-width: calc(100% - 48px);
-	/* align to the right edge with a small right margin */
-	margin: -2px 18px 8px auto;
+		max-width: calc(100% - 34px);
+		/* align to the right edge with a small right margin */
+		margin: -2px 24px 8px auto;
 	border: 2px solid var(--accent);
 	box-shadow: 0 0 30px rgba(57,255,20,0.08), inset 0 0 18px rgba(57,255,20,0.02);
 	border-radius:6px;
@@ -94,8 +94,25 @@ body{
 .terminal-inner{ cursor: grab; }
 
 
-.command-panel{width:100%;display:flex;justify-content:flex-end;margin:-4px 0 28px 0} /* shifted down 10px and align right */
-.command-panel form{width:min(1200px,70vw);display:flex;gap:8px;margin-left:auto;margin-right:18px}
+.command-panel{
+	width:100%;
+	display:flex;
+	justify-content:flex-end;
+	margin:0;
+	transition:transform .7s var(--fs-ease), opacity .5s ease;
+}
+.command-panel form{
+	width:min(1200px,70vw);
+	display:flex;
+	gap:8px;
+	margin:0 24px 0 auto;
+	padding:10px 12px;
+	background:rgba(0,0,0,0.22);
+	border:1px solid rgba(57,255,20,0.06);
+	border-bottom:none;
+	border-radius:8px 8px 0 0;
+	box-shadow:0 10px 24px rgba(57,255,20,0.05);
+}
 .cmd-input{flex:1;padding:10px 12px;border-radius:6px;border:1px solid rgba(57,255,20,0.06);background:rgba(0,0,0,0.25);color:var(--accent);font-family:inherit}
 .cmd-input::placeholder{color:rgba(99,179,107,0.5)}
 .cmd-run{padding:10px 14px;border-radius:6px;border:1px solid rgba(57,255,20,0.06);background:transparent;color:var(--muted);font-weight:800;cursor:pointer}
@@ -215,13 +232,14 @@ body{
 
 /* QWERTY keyboard */
 
+
 .qwerty{
 	width: min(1200px, 70vw);
-	margin:-6px 18px 24px auto;
+	margin:0 18px 24px auto;
 	padding:12px 16px;
 	background:rgba(0,0,0,0.12);
 	border:1px solid rgba(57,255,20,0.04);
-	border-radius:8px;
+	border-radius:0 0 8px 8px;
 	display:flex;
 	flex-direction:column;
 	gap:10px;
@@ -243,10 +261,14 @@ body{
 .screen.terminal-fullscreen.fs-stage-keyboard .qwerty{transform:translateY(120%);opacity:0;pointer-events:none}
 .screen.terminal-fullscreen.fs-stage-numpad #numpad,
 .screen.terminal-fullscreen.fs-stage-numpad #symbol-pad{transform:translateX(-120%);opacity:0;pointer-events:none}
-.screen.terminal-fullscreen .terminal-frame{background:var(--panel);color:var(--accent);box-shadow:0 0 18px rgba(57,255,20,0.10), inset 0 0 12px rgba(57,255,20,0.03);border:2px solid var(--accent);overflow:hidden}
+.screen.terminal-fullscreen .terminal-frame{background:var(--panel);color:var(--accent);box-shadow:0 0 18px rgba(57,255,20,0.10), inset 0 0 12px rgba(57,255,20,0.03);border:2px solid var(--accent);overflow:hidden;margin:6px 24px 6px 10px;max-width:none;width:auto;box-sizing:border-box}
 
 /* hide command panel while fullscreen */
-.screen.terminal-fullscreen .command-panel{display:none}
+
+.screen.terminal-fullscreen .command-panel{
+	opacity:0;
+	pointer-events:none;
+}
 
 /* Keep boot-bar visible above the fullscreen terminal so the fullscreen button remains accessible */
 .screen.terminal-fullscreen .boot-bar{position:fixed;left:0;right:0;bottom:0;z-index:1115}
