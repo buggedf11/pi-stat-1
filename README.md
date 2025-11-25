@@ -1,52 +1,52 @@
 # Pi Stat
 
-Dashboard for monitoring Raspberry Pi nodes and launching repeatable maintenance tasks. The controller ( `main.py` ) is a Flask app backed by Socket.IO; it broadcasts CPU and RAM usage in real time and relays terminal output for approved commands.
+Simple dashboard for watching Raspberry Pi stats and running commands from a web page. The controller lives in `main.py` and serves the UI at port 8000.
 
-## Features
-- Live CPU/RAM feed for each registered Pi via WebSockets
-- Built-in catalogue of safe maintenance tasks (`task list` inside the web terminal)
-- Streaming terminal output when tasks run on the controller or a remote Pi
-- Retro-styled UI that mirrors data across terminal, stats, and logs panels
+## Controller Quick Start
+1. `pip install -r requirements.txt` — get the Python packages.
+2. `python main.py` — start the Flask/Socket.IO server.
+3. Open `http://localhost:8000` (or replace `localhost` with your server IP).
 
-## Getting Started
-1. Create a virtual environment (optional but recommended).
-2. Install dependencies:
+## Connect a Raspberry Pi
+1. On the Pi run `pip install python-socketio[client] psutil` (or reuse the same `requirements.txt`).
+2. Start the agent:
    ```bash
-   pip install -r requirements.txt
+   python pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
    ```
-3. Start the controller:
-   ```bash
-   python main.py
+   - `<controller-ip>`: address where `main.py` is running.
+   - `--pi-id`: choose any unique name for that Pi.
+   - `--label` is optional; it controls the display name in the dashboard.
+
+The Pi now sends CPU/RAM updates and is ready to run commands you trigger from the web terminal.
+
+## Web Terminal Commands
+- `task list` — show the safe, pre-built maintenance tasks.
+- `task run <task-id>` — run a task on the controller, example: `task run uptime`.
+- `task run <task-id> <pi-id>` — send the task to a specific Pi, example: `task run cleanup pi-1`.
+- `task assign "<machine label>" "<task label>"` — log who owns which task without running anything.
+- `assign name "<machine label>" "<new label>"` — rename a machine in the UI.
+
+## Run Third-Party Programs With Live Output
+1. Open the UI terminal and send an `open_program` command:
    ```
-4. Browse to `http://localhost:8000`.
+   {"action":"open_program","command":["sudo","pihole","-f"]}
+   ```
+   - Use a JSON object.
+   - `command` is a list of arguments exactly how you would type them in a shell.
+   - The agent starts the program with stdout captured and streams every line back into the terminal window.
+2. Watch the terminal panel. Anything the program prints appears there. GUI-only apps will stay silent; for daemons, tail their logs instead:
+   ```
+   {"action":"open_program","command":["tail","-f","/var/log/pihole.log"]}
+   ```
+3. Close the program when you are done:
+   ```
+   {"action":"close_program","request_id":"<value from open_program reply>"}
+   ```
+   - The request id is returned right after you open the program.
+   - Closing sends a terminate signal; you will see a final `terminal_finished` message with the exit code.
 
-Use the terminal panel commands:
-- `task list` - show available backend tasks
-- `task run <task-id>` - run a task on the controller (`task run uptime`)
-- `task run <task-id> <pi-id>` - request a registered Pi to run the task
-- `task assign "<machine label>" "<task label>"` - record a responsibility/role without executing a command (quotes optional for single-word names)
-- `assign name "<machine label>" "<new label>"` - rename a machine directly from the terminal console
-
-Renamed machines persist across restarts in `state/labels.json`.
-Task assignments are durable as well and reload from `state/tasks.json`.
-
-## Raspberry Pi Agent
-Each node runs `pi_agent.py`, which handles registration, periodic CPU/RAM reporting, and optional task execution.
-
-```bash
-# on the Raspberry Pi
-pip install -r requirements.txt  # or pip install python-socketio[client] psutil
-python pi_agent.py --controller-url http://controller-host:8000 --pi-id pi-1 --label "Rack Pi 1"
-```
-
-Options:
-- `--interval` (seconds) adjusts telemetry cadence (default 5s).
-- `--register-only` tells the agent to report stats but refuse remote task execution.
-- `--log-level DEBUG` prints verbose diagnostics while developing.
-
-When the controller forwards a task, the agent receives an `execute_task` event, launches the provided command, streams stdout as `task_output`, and finishes with `task_finished`/`task_error`.
-
-## Development Notes
-- The frontend uses Socket.IO v4; keep the CDN link in `templates/index.html` in sync with the Python package version.
-- Metrics animation expects numeric values (percentage) in `data-target` attributes.
-- When adding new tasks, extend `REGISTERED_TASKS` in `main.py` with a label, description, and command list.
+## Helpful Tips
+- One controller can handle many Pis; run `pi_agent.py` on each with a unique `--pi-id`.
+- If a program exits on its own, the terminal stops streaming automatically.
+- Stuck output? Send `close_program` again with the same `request_id` to force-stop it.
+- Renamed machines and task notes persist inside the `state/` folder.
