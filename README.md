@@ -20,6 +20,35 @@ Simple dashboard for watching Raspberry Pi stats and running commands from a web
    ```
 5. Open the dashboard at `http://localhost:8000` (swap `localhost` for your host IP if you are on a different machine).
 
+## Install via Git
+
+If you want to install the controller/agent from a Git repository, clone this project and install dependencies:
+
+```bash
+# replace with your repository URL
+git clone https://github.com/<owner>/<repo>.git
+cd pi-stat-1
+
+# (optional) create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# install dependencies
+pip install -r requirements.txt
+```
+
+Run the controller or agent as needed:
+
+```bash
+# Run the controller (serves UI on port 8000)
+python main.py
+
+# Run the agent on a Raspberry Pi (point to your controller)
+python3 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
+```
+
+Replace `https://github.com/<owner>/<repo>.git` and `<controller-ip>` with the appropriate values for your setup.
+
 ## Connect a Raspberry Pi
 1. Update the Pi and ensure Python 3 is installed:
    ```bash
