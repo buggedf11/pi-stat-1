@@ -18,7 +18,7 @@ import socketio
 PI_NAMESPACE = "/pi"
 # Default controller URL: change this to point at your controller's IP and port
 # Example: "http://172.19.112.40:8000"
-DEFAULT_CONTROLLER_URL = os.environ.get("PISTAT_CONTROLLER", "http://172.19.112.40:8000")
+DEFAULT_CONTROLLER_URL = os.environ.get("PISTAT_CONTROLLER", "http://172.25.04.211:8000")
 
 
 class PiAgent:
