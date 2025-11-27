@@ -16,6 +16,9 @@ import socketio
 
 
 PI_NAMESPACE = "/pi"
+# Default controller URL: change this to point at your controller's IP and port
+# Example: "http://172.19.112.40:8000"
+DEFAULT_CONTROLLER_URL = os.environ.get("PISTAT_CONTROLLER", "http://172.19.112.40:8000")
 
 
 class PiAgent:
@@ -333,7 +336,11 @@ def _self_event(sio_client: socketio.Client, event_name: str):
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Raspberry Pi telemetry agent")
-    parser.add_argument("--controller-url", default=os.environ.get("PISTAT_CONTROLLER", "http://localhost:8000"), help="Base URL of the controller server")
+    parser.add_argument(
+        "--controller-url",
+        default=os.environ.get("PISTAT_CONTROLLER", DEFAULT_CONTROLLER_URL),
+        help="Base URL of the controller server",
+    )
     parser.add_argument("--pi-id", default=os.environ.get("PISTAT_ID") or platform.node(), help="Unique identifier for this Pi")
     parser.add_argument("--label", default=os.environ.get("PISTAT_LABEL"), help="Friendly label to show in the dashboard")
     parser.add_argument("--interval", type=float, default=float(os.environ.get("PISTAT_INTERVAL", 5.0)), help="Seconds between stats reports (default 5)")
