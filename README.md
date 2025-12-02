@@ -2,23 +2,81 @@
 
 Simple dashboard for watching Raspberry Pi stats and running commands from a web page. The controller lives in `main.py` and serves the UI at port 8000.
 
-## Controller Quick Start (Windows or Linux)
+## Table of Contents
+- [Controller Quick Start](#controller-quick-start)
+  - [Windows Setup](#windows-setup)
+  - [Linux Setup](#linux-setup)
+- [Run the Controller](#run-the-controller)
+  - [Windows Controller Commands](#windows-controller-commands)
+  - [Linux Controller Commands](#linux-controller-commands)
+- [Run the Pi Agent](#run-the-pi-agent)
+  - [Windows Agent Commands](#windows-agent-commands)
+  - [Linux Agent Commands](#linux-agent-commands)
+- [Install via Git](#install-via-git)
+- [Connect a Raspberry Pi](#connect-a-raspberry-pi)
+- [Deploying the Agent on Windows](#deploying-the-agent-on-windows)
+- [Web Terminal Commands](#web-terminal-commands)
+- [Run Third-Party Programs With Live Output](#run-third-party-programs-with-live-output)
+- [Helpful Tips](#helpful-tips)
+- [Keep Everything Running After Reboot](#keep-everything-running-after-reboot)
+  - [Linux / Raspberry Pi (systemd)](#linux--raspberry-pi-systemd)
+  - [Windows (Task Scheduler)](#windows-task-scheduler)
+
+## Controller Quick Start
+
+### Windows Setup
 1. Install Python 3.10+ if you do not already have it.
-2. Create and activate a virtual environment (optional but recommended).
-   ```bash
+2. Create and activate a virtual environment (optional but recommended):
+   ```powershell
    python -m venv .venv
-   source .venv/bin/activate        # Linux / macOS
-   .\.venv\Scripts\activate        # Windows PowerShell
+   .\.venv\Scripts\Activate
+   ```
+3. Install the controller dependencies:
+   ```powershell
+   pip install -r requirements.txt
+   ```
+4. Continue with [Windows Controller Commands](#windows-controller-commands) to start the server.
+
+### Linux Setup
+1. Install Python 3.10+ if you do not already have it.
+2. Create and activate a virtual environment (optional but recommended):
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
    ```
 3. Install the controller dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-4. Launch the controller:
-   ```bash
-   python main.py
-   ```
-5. Open the dashboard at `http://localhost:8000` (swap `localhost` for your host IP if you are on a different machine).
+4. Continue with [Linux Controller Commands](#linux-controller-commands) to start the server.
+
+## Run the Controller
+
+### Windows Controller Commands
+```powershell
+py -3.10 main.py
+```
+Once the controller is running, open `http://localhost:8000` in a browser (swap `localhost` for the host IP if you are on another machine).
+
+### Linux Controller Commands
+```bash
+python3 main.py
+```
+After the process starts, browse to `http://localhost:8000` or use the controller's IP address from another device.
+
+## Run the Pi Agent
+
+### Windows Agent Commands
+```powershell
+py -3.10 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id win-node --label "Windows"
+```
+Keep the PowerShell session open so the agent can stream stats and terminal output back to the controller.
+
+### Linux Agent Commands
+```bash
+python3 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
+```
+Adjust the controller URL, Pi identifier, and label to match your environment before running the command.
 
 ## Install via Git
 
@@ -38,16 +96,7 @@ pip install -r requirements.txt
 ```
 
 Run the controller or agent as needed:
-
-```bash
-# Run the controller (serves UI on port 8000)
-python main.py
-
-# Run the agent on a Raspberry Pi (point to your controller)
-python3 pi_agent.py --controller-url http://<controller-ip>:8000 --pi-id pi-1 --label "Living Room"
-```
-
-Replace `https://github.com/<owner>/<repo>.git` and `<controller-ip>` with the appropriate values for your setup.
+Refer to [Run the Controller](#run-the-controller) and [Run the Pi Agent](#run-the-pi-agent) for platform-specific commands once dependencies are installed. Replace `https://github.com/<owner>/<repo>.git` and `<controller-ip>` with the appropriate values for your setup.
 
 ## Connect a Raspberry Pi
 1. Update the Pi and ensure Python 3 is installed:
